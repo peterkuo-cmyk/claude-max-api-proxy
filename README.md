@@ -10,13 +10,20 @@ Using Claude's API with [OpenClaw](https://openclaw.dev) gets expensive fast —
 
 This proxy works around that limitation. It spawns the real Claude Code CLI as a subprocess and exposes an OpenAI-compatible HTTP API locally, so OpenClaw can use your Max subscription as the backend for Telegram and Discord bots.
 
-## Why CLI Instead of Session Tokens?
+## Approach Comparison
 
-Some people extract session tokens from the browser and use them directly. That works, but Anthropic can detect non-standard traffic patterns and ban the account — losing all conversation history and Projects.
+There are two main ways to turn a Claude Max subscription into an API. This project uses the CLI approach, based on [Benson Sun's architecture](https://x.com/BensonTWN/status/2022718855177736395).
 
-This proxy takes a different approach: it spawns the real Claude Code CLI binary as a subprocess. Every request goes through Anthropic's official tool, so the traffic is indistinguishable from normal CLI usage.
-
-> Based on [Benson Sun's architecture](https://x.com/BensonTWN/status/2022718855177736395) — open-sourced for the community.
+|  | Session Token Proxy | CLI Proxy (this project) |
+|--|---------------------|--------------------------|
+| **How it works** | Extract `sessionKey` cookie from browser, reverse-proxy mimics browser traffic to `claude.ai` | Spawn Claude Code CLI as subprocess, relay via OpenAI-compatible HTTP API |
+| **Setup** | Copy cookie from browser, run Docker container | `npm install -g`, authenticate CLI once |
+| **Ban risk** | Higher — Anthropic can detect non-browser traffic patterns (user-agent, timing, token consumption) | Lower — traffic originates from Anthropic's own binary, indistinguishable from normal CLI usage |
+| **Token rotation** | Session tokens expire, need manual re-extraction | CLI handles OAuth refresh automatically |
+| **Tool calling** | Chat only, no tool execution | Full CLI toolchain — Bash, file I/O, web search, browser automation |
+| **Latency** | Lower — direct HTTP call | Higher — subprocess spawn + CLI overhead per request |
+| **Concurrency** | Supports multiple concurrent requests | One request at a time per CLI process |
+| **Dependencies** | Docker / reverse proxy | Node.js + Claude Code CLI |
 
 ## Key Features
 

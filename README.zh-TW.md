@@ -10,13 +10,20 @@
 
 這個 Proxy 繞過了這個限制。它 spawn 真正的 Claude Code CLI 作為子程序，在本地開一個 OpenAI 相容的 HTTP API，讓 OpenClaw 可以用你的 Max 訂閱當後端，驅動 Telegram 和 Discord 機器人。
 
-## 為什麼用 CLI 而不是 Session Token？
+## 方案對比
 
-有些人會從瀏覽器抽取 Session Token 直接使用。可以動，但 Anthropic 能偵測到非標準的流量特徵，帳號被 Ban 的話所有對話紀錄和 Projects 都會消失。
+把 Claude Max 訂閱變成 API 主要有兩種做法。本專案採用 CLI 方案，基於 [Benson Sun 的架構設計](https://x.com/BensonTWN/status/2022718855177736395)。
 
-這個 Proxy 走不同的路：直接 spawn 真正的 Claude Code CLI binary 作為子程序。每個 request 都經過 Anthropic 的官方工具，流量跟正常的 CLI 使用沒有區別。
-
-> 基於 [Benson Sun 的架構設計](https://x.com/BensonTWN/status/2022718855177736395)，開源出來給社群使用。
+|  | Session Token Proxy | CLI Proxy（本專案）|
+|--|---------------------|-------------------|
+| **運作方式** | 從瀏覽器抽取 `sessionKey` cookie，反向代理模擬瀏覽器流量存取 `claude.ai` | Spawn Claude Code CLI 作為子程序，透過 OpenAI 相容 HTTP API 轉接 |
+| **設定** | 從瀏覽器複製 cookie，跑 Docker 容器 | `npm install -g`，CLI 認證一次 |
+| **被 Ban 風險** | 較高 — Anthropic 能偵測非瀏覽器的流量特徵（user-agent、timing、token consumption）| 較低 — 流量從 Anthropic 自己的 binary 發出，跟正常 CLI 使用無法區分 |
+| **Token 更新** | Session token 會過期，需要手動重新抽取 | CLI 自動處理 OAuth refresh |
+| **工具呼叫** | 僅聊天，無法執行工具 | 完整 CLI 工具鏈 — Bash、檔案讀寫、網頁搜尋、瀏覽器自動化 |
+| **延遲** | 較低 — 直接 HTTP 呼叫 | 較高 — 子程序 spawn + CLI overhead |
+| **併發** | 支援多個同時請求 | 每個 CLI 程序同時處理一個請求 |
+| **依賴** | Docker / 反向代理 | Node.js + Claude Code CLI |
 
 ## 核心功能
 
