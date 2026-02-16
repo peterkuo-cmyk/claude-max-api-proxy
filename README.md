@@ -1,5 +1,7 @@
 # Claude Max API Proxy
 
+**English | [繁體中文](README.zh-TW.md)**
+
 **Turn your $200/month Claude Max subscription into a full OpenAI-compatible API — with agentic tool-calling, smart streaming, and Telegram bot integration.**
 
 Most people pay $200/month for Claude Max but can only use it through the web UI or Claude Code CLI. This proxy unlocks your subscription as a standard API, so any OpenAI-compatible client (chatbots, automation platforms, custom apps) can use it — at zero extra cost.
