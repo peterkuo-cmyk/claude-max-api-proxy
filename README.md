@@ -25,6 +25,8 @@ Both approaches below route requests through the Claude Code CLI to avoid sessio
 | **Latency** | Lower — persistent TTY session, no per-request spawn | Higher — new subprocess per request |
 | **Session reuse** | Keeps terminal open between requests | Spawns fresh CLI per request, uses `--resume` for context |
 
+> _"I honestly don't know which approach is better — but the AI kept pushing me toward pipe + stream-json and refused to go the TTY route, so here we are."_ — Author
+
 ## Key Features
 
 ### One Brain, One Context

@@ -25,6 +25,8 @@
 | **延遲** | 較低 — 持久 TTY session，不需每次 spawn | 較高 — 每個 request spawn 新子程序，用 `--resume` 維持 context |
 | **Session 重用** | 終端保持開啟，跨請求重用 | 每次 spawn 新 CLI，用 `--resume` 接續對話 |
 
+> _「我也不知道哪個好，但 AI 就一直讓我往這個方向做，一直不願意往 TTY 方向做 XD」_ — 作者
+
 ## 核心功能
 
 ### 一個大腦、一份 Context
