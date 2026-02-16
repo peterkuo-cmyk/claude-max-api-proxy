@@ -6,9 +6,9 @@
 
 ## Why This Exists
 
-Claude Max ($200/month) includes unlimited access to Opus, Sonnet, and Haiku — but only through the web UI and Claude Code CLI. There's no API key you can plug into other tools.
+Using Claude's API with [OpenClaw](https://openclaw.dev) gets expensive fast — heavy usage can cost hundreds of dollars a month. Claude Max ($200/month) offers unlimited access, but Anthropic restricts it to the web UI and Claude Code CLI only — you can't use your subscription to power third-party tools like OpenClaw.
 
-This proxy wraps Claude Code CLI as a local HTTP server with an OpenAI-compatible API, so [OpenClaw](https://openclaw.dev) can use it as the backend for Telegram and Discord bots.
+This proxy works around that limitation. It spawns the real Claude Code CLI as a subprocess and exposes an OpenAI-compatible HTTP API locally, so OpenClaw can use your Max subscription as the backend for Telegram and Discord bots.
 
 ## Why CLI Instead of Session Tokens?
 

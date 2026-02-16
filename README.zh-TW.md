@@ -6,9 +6,9 @@
 
 ## 為什麼做這個
 
-Claude Max（$200/月）包含 Opus、Sonnet、Haiku 無限使用 — 但只能透過網頁 UI 和 Claude Code CLI 存取，沒有 API Key 可以接到其他工具上。
+用 Claude API 跑 [OpenClaw](https://openclaw.dev) 很燒錢 — 重度使用每個月輕鬆幾百美金。Claude Max（$200/月）雖然無限量，但 Anthropic 限制只能透過網頁 UI 和 Claude Code CLI 使用，不能拿訂閱制去驅動 OpenClaw 這類第三方工具。
 
-這個 Proxy 把 Claude Code CLI 包裝成本地 HTTP 伺服器，提供 OpenAI 相容的 API，讓 [OpenClaw](https://openclaw.dev) 可以拿來當 Telegram/Discord 機器人的後端。
+這個 Proxy 繞過了這個限制。它 spawn 真正的 Claude Code CLI 作為子程序，在本地開一個 OpenAI 相容的 HTTP API，讓 OpenClaw 可以用你的 Max 訂閱當後端，驅動 Telegram 和 Discord 機器人。
 
 ## 為什麼用 CLI 而不是 Session Token？
 
