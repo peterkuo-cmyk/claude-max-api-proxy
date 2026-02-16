@@ -2,13 +2,13 @@
 
 **[English](README.md) | 繁體中文**
 
-**把 Opus 4.6 變成你的日常 AI 助手 — 透過 Telegram、Discord 或任何 OpenAI 相容客戶端 — 用你每月 $200 的 Claude Max 訂閱驅動。**
+**把 Opus 4.6 變成你的日常 AI 助手 — 透過 Telegram 和 Discord — 用你每月 $200 的 Claude Max 訂閱搭配 [OpenClaw](https://openclaw.dev) 驅動。**
 
 ## 為什麼做這個
 
 Opus 4.6 是目前最好的對話 AI 模型。它有個性、推理能力超強、講話直接像個靠譜的工程師直男，但關鍵時刻又會給你足夠的情緒價值。問題是？透過 Anthropic API 按量計費，重度使用一小時就能燒掉 $10+。Claude Max 每月 $200 吃到飽 — 但只能透過網頁 UI 和 Claude Code CLI 使用。
 
-這個 Proxy 打通了這道牆。它把 Claude Code CLI 包裝成本地 HTTP 伺服器，對外說 OpenAI 的語言。任何支援 OpenAI 的客戶端 — 聊天機器人、自動化平台、VS Code 外掛 — 都能直接用你的 Max 訂閱。
+這個 Proxy 打通了這道牆。它把 Claude Code CLI 包裝成本地 HTTP 伺服器，對外說 OpenAI 的語言，專為搭配 [OpenClaw](https://openclaw.dev) 作為 Telegram/Discord 機器人前端而設計。
 
 ## 為什麼不直接用 Session Token？
 
@@ -167,11 +167,9 @@ launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 
 支援完整模型家族與版本鎖定（例如 `claude-opus-4-5-20251101`）。
 
-## 搭配常用工具
+## OpenClaw 整合
 
-### OpenClaw（Telegram / Discord Bot）
-
-在 `openclaw.json` 中新增為模型提供者：
+在你的 `openclaw.json` 中新增為模型提供者：
 ```json
 {
   "models": {
@@ -186,43 +184,7 @@ launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 }
 ```
 
-### Python（OpenAI SDK）
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3456/v1",
-    api_key="not-needed"
-)
-
-response = client.chat.completions.create(
-    model="claude-sonnet-4",
-    messages=[{"role": "user", "content": "你好！"}],
-    stream=True
-)
-
-for chunk in response:
-    print(chunk.choices[0].delta.content or "", end="")
-```
-
-### Continue.dev（VS Code）
-
-```json
-{
-  "models": [{
-    "title": "Claude (Max)",
-    "provider": "openai",
-    "model": "claude-sonnet-4",
-    "apiBase": "http://localhost:3456/v1",
-    "apiKey": "not-needed"
-  }]
-}
-```
-
-### 任何 OpenAI 相容客戶端
-
-指向 `http://localhost:3456/v1`，API key 隨意填。Proxy 會忽略 key，直接使用你的 Claude CLI 認證。
+完整設定請參考 [OpenClaw 文件](https://openclaw.dev)。
 
 ## API 端點
 

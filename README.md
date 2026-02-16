@@ -2,13 +2,13 @@
 
 **English | [繁體中文](README.zh-TW.md)**
 
-**Use Opus 4.6 as your daily AI assistant — through Telegram, Discord, or any OpenAI-compatible client — powered by your $200/month Claude Max subscription.**
+**Use Opus 4.6 as your daily AI assistant — through Telegram and Discord — powered by your $200/month Claude Max subscription and [OpenClaw](https://openclaw.dev).**
 
 ## Why This Exists
 
 Opus 4.6 is the best conversational AI model available today. It has personality, strong reasoning, and a directness that no other model matches. The problem? Using it through the Anthropic API burns $10+/hour on heavy workloads. Claude Max gives you unlimited Opus for $200/month flat — but only through the web UI and Claude Code CLI.
 
-This proxy bridges the gap. It wraps Claude Code CLI as a local HTTP server that speaks the OpenAI API format. Any client that supports OpenAI — chatbots, automation platforms, VS Code extensions — can now use your Max subscription directly.
+This proxy bridges the gap. It wraps Claude Code CLI as a local HTTP server that speaks the OpenAI API format, designed to work with [OpenClaw](https://openclaw.dev) as the Telegram/Discord bot frontend.
 
 ## Why Not Just Use Session Tokens?
 
@@ -167,11 +167,9 @@ launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 
 Full model family support with version pinning (e.g. `claude-opus-4-5-20251101`).
 
-## Use With Popular Tools
+## OpenClaw Integration
 
-### OpenClaw (Telegram / Discord Bot)
-
-Add as a model provider in `openclaw.json`:
+Add as a model provider in your `openclaw.json`:
 ```json
 {
   "models": {
@@ -186,43 +184,7 @@ Add as a model provider in `openclaw.json`:
 }
 ```
 
-### Python (OpenAI SDK)
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3456/v1",
-    api_key="not-needed"
-)
-
-response = client.chat.completions.create(
-    model="claude-sonnet-4",
-    messages=[{"role": "user", "content": "Hello!"}],
-    stream=True
-)
-
-for chunk in response:
-    print(chunk.choices[0].delta.content or "", end="")
-```
-
-### Continue.dev (VS Code)
-
-```json
-{
-  "models": [{
-    "title": "Claude (Max)",
-    "provider": "openai",
-    "model": "claude-sonnet-4",
-    "apiBase": "http://localhost:3456/v1",
-    "apiKey": "not-needed"
-  }]
-}
-```
-
-### Any OpenAI-Compatible Client
-
-Point it to `http://localhost:3456/v1` with any API key. The proxy ignores the key and uses your Claude CLI authentication.
+See the [OpenClaw documentation](https://openclaw.dev) for full setup instructions.
 
 ## API Endpoints
 
