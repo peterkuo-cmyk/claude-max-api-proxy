@@ -2,74 +2,35 @@
 
 **[English](README.md) | 繁體中文**
 
-**把你每月 $200 的 Claude Max 訂閱變成 Telegram/Discord AI 助手 — 搭配 [OpenClaw](https://openclaw.dev) 驅動。**
+**用你的 Claude Max 訂閱搭配任何 OpenAI 相容客戶端。**
 
 ## 為什麼做這個
 
-用 Claude API 跑 [OpenClaw](https://openclaw.dev) 很燒錢 — 重度使用每個月輕鬆幾百美金。Claude Max（$200/月）雖然無限量，但 Anthropic 限制只能透過網頁 UI 和 Claude Code CLI 使用，不能拿訂閱制去驅動 OpenClaw 這類第三方工具。
+Claude Max（$200/月）提供無限量的 Claude 使用，但 Anthropic 限制只能透過網頁 UI 和 Claude Code CLI 使用 — 不能拿你的訂閱去驅動第三方工具。
 
-這個 Proxy 繞過了這個限制。它 spawn 真正的 Claude Code CLI 作為子程序，在本地開一個 OpenAI 相容的 HTTP API，讓 OpenClaw 可以用你的 Max 訂閱當後端，驅動 Telegram 和 Discord 機器人。
-
-## 方案對比
-
-兩種方案都走 Claude Code CLI 來避免 Session Token 的風險。[Benson Sun 的原始設計](https://x.com/BensonTWN/status/2022718855177736395)用 pseudo-TTY 模擬真實終端，本專案改用 `child_process.spawn()` 搭配 pipe I/O 和 CLI 的 `--output-format stream-json`。
-
-|  | Benson 的 TTY 方案 | 本專案（pipe + stream-json）|
-|--|--------------------|-----------------------------|
-| **CLI 互動方式** | Pseudo-TTY（`node-pty`）模擬終端，解析人類可讀的輸出 | `spawn()` 搭配 piped stdio，讀取結構化 JSON stream |
-| **輸出解析** | 解析終端文字 — 需處理 ANSI 碼、格式化、各種 edge case | 結構化的 `stream-json` 事件 — 有型別、可預測、無歧義 |
-| **穩定性** | CLI 的 UI 改版可能會破壞解析邏輯 | 依賴 CLI 的機器可讀格式，不容易壞 |
-| **智慧串流** | 需要自己寫邏輯分辨中間輸出和最終回覆 | Turn 邊界（`message_start` / `result`）在 JSON 中有明確標記 |
-| **工具呼叫可見性** | 終端輸出混雜工具和回覆 | 每個事件有獨立型別 — `content_delta`、`tool_use`、`result` 清楚區分 |
-| **依賴** | `node-pty`（原生模組，需要 build tools）| 無原生依賴，純 JS |
-| **延遲** | 較低 — 持久 TTY session，不需每次 spawn | 較高 — 每個 request spawn 新子程序，用 `--resume` 維持 context |
-| **Session 重用** | 終端保持開啟，跨請求重用 | 每次 spawn 新 CLI，用 `--resume` 接續對話 |
-
-> _「我也不知道哪個好，但 AI 就一直讓我往這個方向做，一直不願意往 TTY 方向做 XD」_ — 作者
-
-## 核心功能
-
-### 一個大腦、一份 Context
-聊天和程式碼執行共用同一個 Claude Code CLI session。模型可以讀檔、改檔、跑測試、回報結果 — 全部在同一份連續的 context 裡完成，不需要在不同服務之間傳遞上下文。
-
-### 智慧串流 (Smart Streaming)
-CLI 在工具呼叫過程中會產生中間輸出 — 思考步驟、命令結果、內部推理。智慧串流會暫存這些內容，只把最終回覆轉發給客戶端。
-
-```
-沒有智慧串流：
-  "讓我查一下..."                    ← 洩漏給客戶端
-  [工具呼叫: Bash echo hello]       ← 洩漏給客戶端
-  "結果是: hello"                   ← 實際答案
-
-有智慧串流：
-  "結果是: hello"                   ← 只有這個到達客戶端
-```
-
-### 無輪數限制
-CLI 可以執行任意數量的工具呼叫 — Bash 指令、檔案讀寫、網頁搜尋、瀏覽器自動化。沒有人為的輪數上限，複雜任務可以完整執行到結束。
-
-### 完整支援 OpenClaw Agent 功能
-搭配 [OpenClaw](https://openclaw.dev) 使用時，這個 Proxy 支援所有原生 Agent 功能：
-- **搜尋網頁** — 搜尋並摘要網頁內容
-- **瀏覽器自動化** — Playwright 驅動的 Chrome 控制，支援登入態
-- **語音訊息** — Whisper 轉錄輸入，TTS 語音泡泡輸出
-- **排程任務** — Cron 定時任務執行
-- **子代理** — 產生子 Agent 平行處理工作
-- **媒體附件** — 截圖、檔案、音訊以原生 Telegram/Discord 媒體發送
-
-### 對話持久化
-對話能跨訊息維持上下文。Proxy 把每個客戶端對話對應到一個 Claude CLI session — 不需要每次都重送完整歷史。
-
-### 超時保護
-10 分鐘的活動超時機制捕捉卡住的程序，同時讓長時間執行的任務正常完成。超時觸發時會透過 Telegram 通知你。
+這個 Proxy 繞過了這個限制。它 spawn 真正的 Claude Code CLI 作為子程序，在本地開一個 OpenAI 相容的 HTTP API。任何支援 OpenAI chat completions 協議的客戶端都可以用你的 Max 訂閱當後端 — 包括 [OpenClaw](https://openclaw.dev) 的 Telegram/Discord 機器人。
 
 ## 運作原理
 
-<p align="center">
-  <img src="docs/architecture.png" alt="架構圖" width="700" />
-</p>
+```
+┌─────────────┐     HTTP      ┌──────────────────┐    spawn()    ┌───────────────┐
+│  任何 OpenAI  │ ──────────▶ │  Claude Max API   │ ──────────▶ │  Claude Code   │
+│  相容客戶端   │ ◀────────── │  Proxy (Express)  │ ◀────────── │  CLI (--print) │
+│              │   SSE/JSON   │  localhost:3456   │  stream-json │               │
+└─────────────┘               └──────────────────┘              └───────────────┘
+```
 
-沒有任何第三方伺服器。所有東西都在你的機器上跑。Request 從 Anthropic 自己的 Binary 出去 — 跟你坐在 Terminal 前面打字完全一樣。
+沒有任何第三方伺服器。所有東西都在你的機器上跑。Request 從 Anthropic 自己的 CLI Binary 出去 — 跟你坐在 Terminal 前面打字完全一樣。
+
+## 核心功能
+
+- **OpenAI 相容 API** — 任何支援 `POST /v1/chat/completions` 的客戶端都可以直接用
+- **串流與非串流** — 完整 SSE 串流支援，直接轉發每個 delta
+- **對話持久化** — 透過 CLI session resume，對話能跨訊息維持上下文
+- **無輪數限制** — CLI 可以執行任意多次工具呼叫，複雜任務完整跑完
+- **活動超時** — 10 分鐘無活動看門狗，捕捉卡住的程序，同時讓長時間任務正常完成
+- **Telegram 進度通知** — 即時顯示正在執行的工具（選用）
+- **無原生依賴** — 純 JS，使用 `child_process.spawn()` 搭配 piped stdio 和 `--output-format stream-json`
 
 ## 快速開始
 
@@ -105,6 +66,37 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
   }'
 ```
 
+## 從原始碼編譯
+
+專案附帶完整的 TypeScript 原始碼，位於 `src/`。
+
+```bash
+git clone https://github.com/GodYeh/claude-max-api-proxy.git
+cd claude-max-api-proxy
+npm install
+npm run build    # 編譯 src/ → dist/
+npm run start    # 啟動伺服器
+```
+
+## 設定
+
+### 環境變數
+
+| 變數 | 必填 | 說明 |
+|------|------|------|
+| `TELEGRAM_NOTIFY_ID` | 否 | 超時通知的 Telegram 使用者 ID |
+| `DEBUG` | 否 | 設定任意值以啟用 request logging |
+
+### 可用模型
+
+| Model ID | 說明 |
+|----------|------|
+| `claude-opus-4` | Claude Opus（最強）|
+| `claude-sonnet-4` | Claude Sonnet（均衡）|
+| `claude-haiku-4` | Claude Haiku（最快）|
+
+支援完整模型家族與版本鎖定（例如 `claude-opus-4-5-20251101`、`claude-sonnet-4-20250514`）。
+
 ### macOS 開機自動啟動
 
 建立 `~/Library/LaunchAgents/com.claude-max-api.plist`：
@@ -135,9 +127,6 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
       <string>/Users/YOUR_USERNAME</string>
       <key>PATH</key>
       <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-      <!-- 選用：超時通知 -->
-      <key>TELEGRAM_NOTIFY_ID</key>
-      <string>YOUR_TELEGRAM_USER_ID</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/tmp/claude-max-api.log</string>
@@ -151,25 +140,6 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
 ```bash
 launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 ```
-
-## 設定
-
-### 環境變數
-
-| 變數 | 必填 | 說明 |
-|------|------|------|
-| `TELEGRAM_NOTIFY_ID` | 否 | 超時通知的 Telegram 使用者 ID |
-| `CLAUDE_CODE_OAUTH_TOKEN` | 否 | 明確指定 OAuth token（否則使用 CLI 的 Keychain）|
-
-### 可用模型
-
-| Model ID | 說明 |
-|----------|------|
-| `claude-opus-4` | Claude Opus 4（最強）|
-| `claude-sonnet-4` | Claude Sonnet 4（均衡）|
-| `claude-haiku-4` | Claude Haiku 4（最快）|
-
-支援完整模型家族與版本鎖定（例如 `claude-opus-4-5-20251101`）。
 
 ## OpenClaw 整合
 
@@ -188,7 +158,7 @@ launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 }
 ```
 
-完整設定請參考 [OpenClaw 文件](https://openclaw.dev)。
+搭配 [OpenClaw](https://openclaw.dev) 使用時，支援所有原生 Agent 功能：網頁搜尋、瀏覽器自動化、語音訊息、排程任務、媒體附件等。
 
 ## API 端點
 
@@ -198,35 +168,36 @@ launchctl load ~/Library/LaunchAgents/com.claude-max-api.plist
 | `/v1/models` | GET | 列出可用模型 |
 | `/v1/chat/completions` | POST | 聊天補全（串流與非串流）|
 
-## 架構
+## 專案結構
 
 ```
-dist/
+src/
 ├── adapter/
-│   ├── openai-to-cli.js   # OpenAI 請求 → CLI prompt + 系統提示詞
-│   └── cli-to-openai.js   # CLI 結果 → OpenAI 回應格式
+│   ├── openai-to-cli.ts    # OpenAI 請求 → CLI prompt + 系統提示詞
+│   └── cli-to-openai.ts    # CLI JSON stream → OpenAI 回應格式
 ├── subprocess/
-│   └── manager.js          # CLI 子程序生命週期與活動超時
+│   └── manager.ts           # CLI 子程序生命週期與活動超時
 ├── session/
-│   └── manager.js          # 對話 → CLI session 對應
+│   └── manager.ts           # 對話 → CLI session 對應
 ├── server/
-│   ├── routes.js            # 智慧串流、SSE、進度通知
-│   ├── index.js             # Express 伺服器設定
-│   └── standalone.js        # 進入點
+│   ├── routes.ts             # SSE 串流、進度通知
+│   ├── index.ts              # Express 伺服器設定
+│   └── standalone.ts         # 進入點
 └── types/
-    └── claude-cli.js        # CLI stream-json 事件型別守衛
+    ├── openai.ts             # OpenAI API 型別定義
+    └── claude-cli.ts         # CLI stream-json 事件型別
 ```
 
 ## 安全性
 
 - **無 Shell 注入** — 使用 Node.js `spawn()`，非 `exec()`
 - **無儲存憑證** — 認證由 Claude CLI 的 OS Keychain 處理
-- **無寫死的秘密** — 所有敏感設定透過環境變數
+- **無寫死的秘密** — 所有敏感設定透過環境變數或外部設定檔
 - **僅限本機** — 預設綁定 `127.0.0.1`，不對外暴露
 
 ## 使用建議
 
-- **不要拿 Opus 跑 heartbeat/cron** — 固定間隔的 request 可能被視為機器流量。排程任務交給輕量模型（Gemini Flash、Haiku）就好，殺雞不用牛刀。
+- **不要拿 Opus 跑 heartbeat/cron** — 固定間隔的 request 可能被視為機器流量。排程任務交給輕量模型就好。
 - **注意 weekly token 上限** — 這個 Proxy 不會繞過任何用量限制。如果你的 Claude Code 很少用到 weekly 上限，就有很大的空間可以用。
 
 ## 授權條款
@@ -235,6 +206,5 @@ MIT
 
 ## 致謝
 
-- 原始概念與架構設計來自 [Benson Sun](https://x.com/BensonTWN/status/2022718855177736395) — 本專案是他方案的開源實作，有部分改動
-- 初始代碼 fork 自 [atalovesyou/claude-max-api-proxy](https://github.com/atalovesyou/claude-max-api-proxy)
-- 智慧串流、Session 管理、OpenClaw 整合由 [Claude Code](https://github.com/anthropics/claude-code) 實作
+- 初始代碼基於 [atalovesyou/claude-max-api-proxy](https://github.com/atalovesyou/claude-max-api-proxy)
+- Session 管理、串流、OpenClaw 整合由 [Claude Code](https://github.com/anthropics/claude-code) 實作

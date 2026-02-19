@@ -1,5 +1,7 @@
 # Claude Max API Proxy
 
+**English | [繁體中文](README.zh-TW.md)**
+
 **Use your Claude Max subscription with any OpenAI-compatible client.**
 
 ## Why This Exists
