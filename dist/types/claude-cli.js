@@ -17,3 +17,4 @@ export function isContentDelta(msg) {
 export function isSystemInit(msg) {
     return msg.type === "system" && msg.subtype === "init";
 }
+//# sourceMappingURL=claude-cli.js.map

@@ -1,30 +1,29 @@
-/**
- * Claude Code CLI Subprocess Manager
- *
- * Handles spawning, managing, and parsing output from Claude CLI subprocesses.
- * Uses spawn() instead of exec() to prevent shell injection vulnerabilities.
- */
 import { EventEmitter } from "events";
-import type { ClaudeCliMessage, ClaudeCliAssistant, ClaudeCliResult } from "../types/claude-cli.js";
+import type { ClaudeCliMessage, ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
 import type { ClaudeModel } from "../adapter/openai-to-cli.js";
 export interface SubprocessOptions {
     model: ClaudeModel;
     sessionId?: string;
+    resumeSessionId?: string;
+    systemPrompt?: string | null;
     cwd?: string;
     timeout?: number;
 }
 export interface SubprocessEvents {
     message: (msg: ClaudeCliMessage) => void;
+    content_delta: (msg: ClaudeCliStreamEvent) => void;
     assistant: (msg: ClaudeCliAssistant) => void;
     result: (result: ClaudeCliResult) => void;
     error: (error: Error) => void;
     close: (code: number | null) => void;
     raw: (line: string) => void;
+    resume_failed: (errorText: string) => void;
 }
 export declare class ClaudeSubprocess extends EventEmitter {
     private process;
     private buffer;
     private timeoutId;
+    private activityTimeout;
     private isKilled;
     /**
      * Start the Claude CLI subprocess with the given prompt
@@ -39,7 +38,12 @@ export declare class ClaudeSubprocess extends EventEmitter {
      */
     private processBuffer;
     /**
-     * Clear the timeout timer
+     * Reset activity timeout — called on each stdout data chunk.
+     * If CLI goes silent for ACTIVITY_TIMEOUT ms, we kill it.
+     */
+    private resetActivityTimeout;
+    /**
+     * Clear all timeout timers
      */
     private clearTimeout;
     /**
@@ -60,13 +64,11 @@ export declare function verifyClaude(): Promise<{
     version?: string;
 }>;
 /**
- * Check if Claude CLI is authenticated
- *
+ * Check if Claude CLI is authenticated.
  * Claude Code stores credentials in the OS keychain, not a file.
- * We verify authentication by checking if we can call the CLI successfully.
- * If the CLI is installed, it typically has valid credentials from `claude auth login`.
  */
 export declare function verifyAuth(): Promise<{
     ok: boolean;
     error?: string;
 }>;
+//# sourceMappingURL=manager.d.ts.map

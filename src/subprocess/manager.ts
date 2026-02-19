@@ -7,21 +7,61 @@
 import { spawn } from "child_process";
 import { EventEmitter } from "events";
 import path from "path";
-import { isAssistantMessage, isResultMessage, isContentDelta, } from "../types/claude-cli.js";
+import {
+    isAssistantMessage,
+    isResultMessage,
+    isContentDelta,
+} from "../types/claude-cli.js";
+import type {
+    ClaudeCliMessage,
+    ClaudeCliAssistant,
+    ClaudeCliResult,
+    ClaudeCliStreamEvent,
+} from "../types/claude-cli.js";
+import type { ClaudeModel } from "../adapter/openai-to-cli.js";
+
 // Stable cwd for session file consistency
-const PROXY_CWD = path.join(process.env.HOME || "/tmp", ".openclaw", "workspace");
+const PROXY_CWD = path.join(
+    process.env.HOME || "/tmp",
+    ".openclaw",
+    "workspace"
+);
+
 const ACTIVITY_TIMEOUT = 600_000; // 10 minutes (no stdout activity = stuck)
+
+export interface SubprocessOptions {
+    model: ClaudeModel;
+    sessionId?: string;
+    resumeSessionId?: string;
+    systemPrompt?: string | null;
+    cwd?: string;
+    timeout?: number;
+}
+
+export interface SubprocessEvents {
+    message: (msg: ClaudeCliMessage) => void;
+    content_delta: (msg: ClaudeCliStreamEvent) => void;
+    assistant: (msg: ClaudeCliAssistant) => void;
+    result: (result: ClaudeCliResult) => void;
+    error: (error: Error) => void;
+    close: (code: number | null) => void;
+    raw: (line: string) => void;
+    resume_failed: (errorText: string) => void;
+}
+
 export class ClaudeSubprocess extends EventEmitter {
-    process = null;
-    buffer = "";
-    timeoutId = null;
-    activityTimeout = ACTIVITY_TIMEOUT;
-    isKilled = false;
+    private process: ReturnType<typeof spawn> | null = null;
+    private buffer = "";
+    private timeoutId: ReturnType<typeof setTimeout> | null = null;
+    private activityTimeout = ACTIVITY_TIMEOUT;
+    private isKilled = false;
+
     /**
      * Start the Claude CLI subprocess with the given prompt
      */
-    async start(prompt, options) {
+    async start(prompt: string, options: SubprocessOptions): Promise<void> {
         const args = this.buildArgs(prompt, options);
+
         return new Promise((resolve, reject) => {
             try {
                 // Use spawn() for security - no shell interpretation
@@ -30,48 +70,68 @@ export class ClaudeSubprocess extends EventEmitter {
                     env: { ...process.env },
                     stdio: ["pipe", "pipe", "pipe"],
                 });
+
                 // Set activity timeout (resets on each stdout data)
                 this.activityTimeout = ACTIVITY_TIMEOUT;
                 this.resetActivityTimeout();
+
                 // Handle spawn errors (e.g., claude not found)
                 this.process.on("error", (err) => {
                     this.clearTimeout();
                     if (err.message.includes("ENOENT")) {
-                        reject(new Error("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"));
-                    }
-                    else {
+                        reject(
+                            new Error(
+                                "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+                            )
+                        );
+                    } else {
                         reject(err);
                     }
                 });
+
                 // Close stdin since we pass prompt as argument
                 this.process.stdin?.end();
-                console.error(`[Subprocess] Process spawned with PID: ${this.process.pid}`);
+                console.error(
+                    `[Subprocess] Process spawned with PID: ${this.process.pid}`
+                );
+
                 // Parse JSON stream from stdout
-                this.process.stdout?.on("data", (chunk) => {
+                this.process.stdout?.on("data", (chunk: Buffer) => {
                     const data = chunk.toString();
-                    console.error(`[Subprocess] Received ${data.length} bytes of stdout`);
+                    console.error(
+                        `[Subprocess] Received ${data.length} bytes of stdout`
+                    );
                     // Reset activity timeout — CLI is still producing output
                     this.resetActivityTimeout();
                     this.buffer += data;
                     this.processBuffer();
                 });
+
                 // Capture stderr for debugging and resume failure detection
-                this.process.stderr?.on("data", (chunk) => {
+                this.process.stderr?.on("data", (chunk: Buffer) => {
                     const errorText = chunk.toString().trim();
                     if (errorText) {
-                        console.error("[Subprocess stderr]:", errorText.slice(0, 500));
+                        console.error(
+                            "[Subprocess stderr]:",
+                            errorText.slice(0, 500)
+                        );
                         // Detect resume failures so caller can invalidate the session
-                        if (errorText.includes("Failed to resume") ||
+                        if (
+                            errorText.includes("Failed to resume") ||
                             errorText.includes("Session not found") ||
                             errorText.includes("--resume requires") ||
-                            errorText.includes("Could not find session")) {
+                            errorText.includes("Could not find session")
+                        ) {
                             this.emit("resume_failed", errorText);
                         }
                     }
                 });
+
                 // Handle process close
-                this.process.on("close", (code) => {
-                    console.error(`[Subprocess] Process closed with code: ${code}`);
+                this.process.on("close", (code: number | null) => {
+                    console.error(
+                        `[Subprocess] Process closed with code: ${code}`
+                    );
                     this.clearTimeout();
                     // Process any remaining buffer
                     if (this.buffer.trim()) {
@@ -79,19 +139,20 @@ export class ClaudeSubprocess extends EventEmitter {
                     }
                     this.emit("close", code);
                 });
+
                 // Resolve immediately since we're streaming
                 resolve();
-            }
-            catch (err) {
+            } catch (err) {
                 this.clearTimeout();
                 reject(err);
             }
         });
     }
+
     /**
      * Build CLI arguments array
      */
-    buildArgs(prompt, options) {
+    private buildArgs(prompt: string, options: SubprocessOptions): string[] {
         const args = [
             "--print",
             "--output-format",
@@ -102,54 +163,57 @@ export class ClaudeSubprocess extends EventEmitter {
             options.model,
             "--dangerously-skip-permissions",
         ];
+
         // Session handling: --resume for continuing, --session-id for new
         if (options.resumeSessionId) {
             args.push("--resume", options.resumeSessionId);
-        }
-        else if (options.sessionId) {
+        } else if (options.sessionId) {
             args.push("--session-id", options.sessionId);
         }
+
         // Pass system prompt as a native CLI flag
         if (options.systemPrompt) {
             args.push("--system-prompt", options.systemPrompt);
         }
+
         args.push("--", prompt);
         return args;
     }
+
     /**
      * Process the buffer and emit parsed messages
      */
-    processBuffer() {
+    private processBuffer(): void {
         const lines = this.buffer.split("\n");
         this.buffer = lines.pop() || "";
+
         for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed)
-                continue;
+            if (!trimmed) continue;
+
             try {
-                const message = JSON.parse(trimmed);
+                const message: ClaudeCliMessage = JSON.parse(trimmed);
                 this.emit("message", message);
+
                 if (isContentDelta(message)) {
                     this.emit("content_delta", message);
-                }
-                else if (isAssistantMessage(message)) {
+                } else if (isAssistantMessage(message)) {
                     this.emit("assistant", message);
-                }
-                else if (isResultMessage(message)) {
+                } else if (isResultMessage(message)) {
                     this.emit("result", message);
                 }
-            }
-            catch {
+            } catch {
                 // Non-JSON output, emit as raw
                 this.emit("raw", trimmed);
             }
         }
     }
+
     /**
      * Reset activity timeout — called on each stdout data chunk.
      * If CLI goes silent for ACTIVITY_TIMEOUT ms, we kill it.
      */
-    resetActivityTimeout() {
+    private resetActivityTimeout(): void {
         if (this.timeoutId) {
             clearTimeout(this.timeoutId);
         }
@@ -157,59 +221,76 @@ export class ClaudeSubprocess extends EventEmitter {
             if (!this.isKilled) {
                 this.isKilled = true;
                 this.process?.kill("SIGTERM");
-                this.emit("error", new Error(`Request timed out — no output for ${this.activityTimeout / 1000}s (activity timeout)`));
+                this.emit(
+                    "error",
+                    new Error(
+                        `Request timed out — no output for ${this.activityTimeout / 1000}s (activity timeout)`
+                    )
+                );
             }
         }, this.activityTimeout);
     }
+
     /**
      * Clear all timeout timers
      */
-    clearTimeout() {
+    private clearTimeout(): void {
         if (this.timeoutId) {
             globalThis.clearTimeout(this.timeoutId);
             this.timeoutId = null;
         }
     }
+
     /**
      * Kill the subprocess
      */
-    kill(signal = "SIGTERM") {
+    kill(signal: NodeJS.Signals = "SIGTERM"): void {
         if (!this.isKilled && this.process) {
             this.isKilled = true;
             this.clearTimeout();
             this.process.kill(signal);
         }
     }
+
     /**
      * Check if the process is still running
      */
-    isRunning() {
-        return (this.process !== null &&
+    isRunning(): boolean {
+        return (
+            this.process !== null &&
             !this.isKilled &&
-            this.process.exitCode === null);
+            this.process.exitCode === null
+        );
     }
 }
+
 /**
  * Verify that Claude CLI is installed and accessible
  */
-export async function verifyClaude() {
+export async function verifyClaude(): Promise<{
+    ok: boolean;
+    error?: string;
+    version?: string;
+}> {
     return new Promise((resolve) => {
         const proc = spawn("claude", ["--version"], { stdio: "pipe" });
         let output = "";
-        proc.stdout?.on("data", (chunk) => {
+
+        proc.stdout?.on("data", (chunk: Buffer) => {
             output += chunk.toString();
         });
+
         proc.on("error", () => {
             resolve({
                 ok: false,
                 error: "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code",
             });
         });
+
         proc.on("close", (code) => {
             if (code === 0) {
                 resolve({ ok: true, version: output.trim() });
-            }
-            else {
+            } else {
                 resolve({
                     ok: false,
                     error: "Claude CLI returned non-zero exit code",
@@ -218,11 +299,14 @@ export async function verifyClaude() {
         });
     });
 }
+
 /**
  * Check if Claude CLI is authenticated.
  * Claude Code stores credentials in the OS keychain, not a file.
  */
-export async function verifyAuth() {
+export async function verifyAuth(): Promise<{
+    ok: boolean;
+    error?: string;
+}> {
     return { ok: true };
 }
-//# sourceMappingURL=manager.js.map

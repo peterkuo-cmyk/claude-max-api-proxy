@@ -1,10 +1,4 @@
 /**
- * Claude Code CLI Provider Plugin for OpenAI-compatible client
- *
- * Enables using Claude Max subscription through Claude Code CLI,
- * bypassing OAuth token scope restrictions.
- */
-/**
  * Plugin definition
  */
 declare const claudeCodeCliPlugin: {
@@ -22,3 +16,4 @@ export default claudeCodeCliPlugin;
 export { startServer, stopServer, getServer } from "./server/index.js";
 export { ClaudeSubprocess, verifyClaude, verifyAuth } from "./subprocess/manager.js";
 export { sessionManager } from "./session/manager.js";
+//# sourceMappingURL=index.d.ts.map

@@ -1,22 +1,39 @@
+/**
+ * Converts OpenAI chat request format to Claude CLI input
+ */
+import type { OpenAIChatRequest, OpenAIChatMessage } from "../types/openai.js";
+
+export type ClaudeModel = "opus" | "sonnet" | "haiku" | string;
+
+export interface CliInput {
+    prompt: string;
+    model: ClaudeModel;
+    systemPrompt: string | null;
+    sessionId?: string;
+    isResuming?: boolean;
+}
+
 // ─── Content extraction ────────────────────────────────────────────
+
 /**
  * Extract plain text from message content.
  * OpenClaw gateway may send content as:
  *   - string: "hello"
  *   - array:  [{type:"text", text:"hello"}, {type:"image", ...}]
  */
-function extractText(content) {
-    if (typeof content === "string")
-        return content;
+function extractText(content: OpenAIChatMessage["content"]): string {
+    if (typeof content === "string") return content;
     if (Array.isArray(content)) {
         return content
             .filter((c) => c.type === "text" && typeof c.text === "string")
-            .map((c) => c.text)
+            .map((c) => c.text!)
             .join("\n");
     }
     return String(content ?? "");
 }
+
 // ─── System prompt sanitization ────────────────────────────────────
+
 /**
  * Sanitize the OpenClaw system prompt for Claude Code CLI.
  *
@@ -32,28 +49,37 @@ function extractText(content) {
  * This function strips those problematic sections while preserving the useful
  * parts (persona, workspace context, runtime info).
  */
-function sanitizeSystemPrompt(prompt) {
-    if (!prompt)
-        return prompt;
+function sanitizeSystemPrompt(prompt: string): string {
+    if (!prompt) return prompt;
+
     // Remove the "Silent Replies" section entirely
     prompt = prompt.replace(/## Silent Replies[\s\S]*?(?=\n## |\n$|$)/, "");
+
     // Remove the "Heartbeats" section (HEARTBEAT_OK instructions)
     prompt = prompt.replace(/## Heartbeats[\s\S]*?(?=\n## |\n$|$)/, "");
+
     // Remove inline NO_REPLY references in tool descriptions
     prompt = prompt.replace(/[—–-]\s*reply with NO_REPLY[^.\n]*\./g, ".");
     prompt = prompt.replace(/respond with ONLY:\s*NO_REPLY/g, "respond normally");
     prompt = prompt.replace(/reply ONLY:\s*NO_REPLY/g, "respond normally");
+
     // Remove the "Tooling" section (OpenClaw tool list) — Claude CLI has its own tools
     prompt = prompt.replace(/## Tooling\nTool availability[^]*?(?=\n## )/s, "");
+
     // Remove inline references to NO_REPLY in messaging tool instructions
     prompt = prompt.replace(/If you use `message`[^]*?NO_REPLY[^.\n]*\./g, "");
+
     // Remove references about defaulting to NO_REPLY
     prompt = prompt.replace(/do not forward raw system text or default to NO_REPLY\)/g, ")");
+
     // Clean up multiple consecutive blank lines
     prompt = prompt.replace(/\n{4,}/g, "\n\n\n");
+
     return prompt.trim();
 }
+
 // ─── XML tool cleaning ─────────────────────────────────────────────
+
 /**
  * XML tool tag names used by OpenClaw's native tool system.
  * When conversation history contains assistant messages with these XML-formatted
@@ -66,6 +92,7 @@ const XML_TOOL_TAGS = [
     "cron", "nodes", "sessions_list", "sessions_history", "sessions_send",
     "message", "media",
 ];
+
 /**
  * Clean XML tool call patterns from assistant message content.
  * OpenClaw's conversation history may contain assistant messages with XML-formatted
@@ -74,41 +101,67 @@ const XML_TOOL_TAGS = [
  *
  * We replace XML tool blocks with a brief summary to preserve context without the format.
  */
-function cleanAssistantContent(content) {
+function cleanAssistantContent(content: string): string {
     let cleaned = content;
+
     // Bash/exec: extract command for context
-    cleaned = cleaned.replace(/<(?:Bash|exec)[>\s][\s\S]*?<command>([\s\S]*?)<\/command>[\s\S]*?<\/(?:Bash|exec)>/gi, (_, cmd) => `[Ran command: ${cmd.trim().substring(0, 200)}]`);
+    cleaned = cleaned.replace(
+        /<(?:Bash|exec)[>\s][\s\S]*?<command>([\s\S]*?)<\/command>[\s\S]*?<\/(?:Bash|exec)>/gi,
+        (_, cmd) => `[Ran command: ${cmd.trim().substring(0, 200)}]`
+    );
     // read: extract path
-    cleaned = cleaned.replace(/<read[>\s][\s\S]*?<path>([\s\S]*?)<\/path>[\s\S]*?<\/read>/gi, (_, path) => `[Read file: ${path.trim()}]`);
+    cleaned = cleaned.replace(
+        /<read[>\s][\s\S]*?<path>([\s\S]*?)<\/path>[\s\S]*?<\/read>/gi,
+        (_, path) => `[Read file: ${path.trim()}]`
+    );
     // browser: extract action
-    cleaned = cleaned.replace(/<browser[>\s][\s\S]*?<action>([\s\S]*?)<\/action>[\s\S]*?<\/browser>/gi, (_, action) => `[Browser: ${action.trim()}]`);
+    cleaned = cleaned.replace(
+        /<browser[>\s][\s\S]*?<action>([\s\S]*?)<\/action>[\s\S]*?<\/browser>/gi,
+        (_, action) => `[Browser: ${action.trim()}]`
+    );
     // message: extract action
-    cleaned = cleaned.replace(/<message[>\s][\s\S]*?<action>([\s\S]*?)<\/action>[\s\S]*?<\/message>/gi, (_, action) => `[Message: ${action.trim()}]`);
+    cleaned = cleaned.replace(
+        /<message[>\s][\s\S]*?<action>([\s\S]*?)<\/action>[\s\S]*?<\/message>/gi,
+        (_, action) => `[Message: ${action.trim()}]`
+    );
     // cron, canvas, nodes, gateway, sessions_*: extract action generically
-    cleaned = cleaned.replace(/<(cron|canvas|nodes|gateway|sessions_list|sessions_history|sessions_send|session_status)[>\s][\s\S]*?(?:<action>([\s\S]*?)<\/action>)?[\s\S]*?<\/\1>/gi, (_, tool, action) => `[${tool}: ${(action || 'executed').trim()}]`);
+    cleaned = cleaned.replace(
+        /<(cron|canvas|nodes|gateway|sessions_list|sessions_history|sessions_send|session_status)[>\s][\s\S]*?(?:<action>([\s\S]*?)<\/action>)?[\s\S]*?<\/\1>/gi,
+        (_, tool, action) => `[${tool}: ${(action || 'executed').trim()}]`
+    );
     // apply_patch, process, media, find, grep, ls: generic summary
-    cleaned = cleaned.replace(/<(apply_patch|process|media|find|grep|ls)[>\s][\s\S]*?<\/\1>/gi, (_, tool) => `[${tool} executed]`);
+    cleaned = cleaned.replace(
+        /<(apply_patch|process|media|find|grep|ls)[>\s][\s\S]*?<\/\1>/gi,
+        (_, tool) => `[${tool} executed]`
+    );
     // Clean leftover unmatched opening tags
-    cleaned = cleaned.replace(new RegExp(`<(${XML_TOOL_TAGS.join("|")})(\\s[^>]*)?>`, "gi"), (_, tool) => `[${tool}]`);
+    cleaned = cleaned.replace(
+        new RegExp(`<(${XML_TOOL_TAGS.join("|")})(\\s[^>]*)?>`, "gi"),
+        (_, tool) => `[${tool}]`
+    );
     // Collapse excessive consecutive summaries
     cleaned = cleaned.replace(/(\[[\w\s:\/._-]+\]\s*){4,}/g, (match) => {
         const items = match.trim().split('\n').filter(Boolean);
         return items.slice(0, 3).join('\n') + `\n[...and ${items.length - 3} more tool calls]\n`;
     });
+
     return cleaned.trim();
 }
+
 // ─── Model mapping ─────────────────────────────────────────────────
+
 /**
  * Maps model strings from OpenClaw to Claude CLI --model values.
  *
  * CLI accepts either aliases (opus/sonnet/haiku → latest version)
  * or full model names (claude-opus-4-5-20251101 → specific version).
  */
-const MODEL_MAP = {
+const MODEL_MAP: Record<string, string> = {
     // Short aliases → CLI built-in aliases (always latest)
     "opus": "opus",
     "sonnet": "sonnet",
     "haiku": "haiku",
+
     // Opus family
     "claude-opus-4": "opus",
     "claude-opus-4-6": "opus",
@@ -118,39 +171,44 @@ const MODEL_MAP = {
     "claude-opus-4-1-20250805": "claude-opus-4-1-20250805",
     "claude-opus-4-0": "claude-opus-4-20250514",
     "claude-opus-4-20250514": "claude-opus-4-20250514",
+
     // Sonnet family
     "claude-sonnet-4": "sonnet",
     "claude-sonnet-4-5": "sonnet",
     "claude-sonnet-4-5-20250929": "sonnet",
     "claude-sonnet-4-0": "claude-sonnet-4-20250514",
     "claude-sonnet-4-20250514": "claude-sonnet-4-20250514",
+
     // Haiku family
     "claude-haiku-4": "haiku",
     "claude-haiku-4-5": "haiku",
     "claude-haiku-4-5-20251001": "haiku",
 };
+
 /**
  * Extract Claude CLI --model value from request model string.
  * Strips provider prefixes (maxproxy/, claude-code-cli/) before lookup.
  * Falls back to "opus" for unrecognized models.
  */
-export function extractModel(model) {
-    if (!model)
-        return "opus";
+export function extractModel(model: string): ClaudeModel {
+    if (!model) return "opus";
+
     // Try direct lookup
-    if (MODEL_MAP[model])
-        return MODEL_MAP[model];
+    if (MODEL_MAP[model]) return MODEL_MAP[model];
+
     // Strip provider prefixes: "maxproxy/claude-opus-4-5" → "claude-opus-4-5"
     const stripped = model.replace(/^(claude-code-cli|maxproxy)\//, "");
-    if (MODEL_MAP[stripped])
-        return MODEL_MAP[stripped];
+    if (MODEL_MAP[stripped]) return MODEL_MAP[stripped];
+
     // If it looks like a full Claude model name, pass it through directly
-    if (stripped.startsWith("claude-"))
-        return stripped;
+    if (stripped.startsWith("claude-")) return stripped;
+
     // Default to opus (Claude Max subscription)
     return "opus";
 }
+
 // ─── CLI tool instruction ──────────────────────────────────────────
+
 /**
  * CLI tool usage instruction appended to the system prompt.
  * This ensures the CLI model uses its native tool system (Bash, Read, Write, etc.)
@@ -303,25 +361,29 @@ For commands that might run silently for a long time (large downloads, heavy pro
 - Do NOT include internal thinking like "Let me check..." in your reply
 - Reply in the SAME language the user used (Chinese → Chinese, English → English)
 - Be concise — your entire output becomes one Telegram message`;
+
 // ─── Prompt conversion ─────────────────────────────────────────────
+
 /**
  * Extract system prompt from messages (returned separately for --system-prompt flag).
  * Sanitizes OpenClaw's NO_REPLY/Heartbeat/Tooling directives, then appends
  * CLI tool instructions.
  */
-export function extractSystemPrompt(messages) {
-    const systemParts = [];
+export function extractSystemPrompt(messages: OpenAIChatMessage[]): string | null {
+    const systemParts: string[] = [];
     for (const msg of messages) {
         if (msg.role === "system") {
             systemParts.push(extractText(msg.content));
         }
     }
+
     const base = systemParts.join("\n\n") || "";
     // Sanitize OpenClaw-specific directives that confuse CLI
     const sanitized = sanitizeSystemPrompt(base);
     // Append CLI tool instruction to ensure native tool usage
     return (sanitized + CLI_TOOL_INSTRUCTION).trim() || null;
 }
+
 /**
  * Convert OpenAI messages array to a single prompt string for Claude CLI
  *
@@ -331,22 +393,23 @@ export function extractSystemPrompt(messages) {
  * to prevent the model from mimicking XML format instead of using native tools.
  * NO_REPLY assistant messages are filtered out (OpenClaw silent reply tokens).
  */
-export function messagesToPrompt(messages) {
+export function messagesToPrompt(messages: OpenAIChatMessage[]): string {
     const nonSystemMessages = messages.filter((msg) => msg.role !== "system");
-    const parts = [];
+    const parts: string[] = [];
+
     for (const msg of nonSystemMessages) {
         const text = extractText(msg.content);
+
         switch (msg.role) {
             case "user":
                 parts.push(`[User]\n${text}`);
                 break;
+
             case "assistant": {
                 // Skip NO_REPLY responses — OpenClaw silent tokens, not real content
-                if (!text || text.trim() === "NO_REPLY")
-                    break;
+                if (!text || text.trim() === "NO_REPLY") break;
                 // Skip assistant messages that are purely tool_calls with no text
-                if (msg.tool_calls && (!text || text === "null"))
-                    break;
+                if (msg.tool_calls && (!text || text === "null")) break;
                 // Clean XML tool patterns to prevent CLI from mimicking them
                 const cleaned = cleanAssistantContent(text);
                 if (cleaned) {
@@ -354,22 +417,26 @@ export function messagesToPrompt(messages) {
                 }
                 break;
             }
+
             case "tool":
                 // Skip tool results — the CLI has its own tool system
                 break;
+
             default:
                 parts.push(text);
                 break;
         }
     }
+
     return parts.join("\n\n").trim();
 }
+
 /**
  * Extract only the latest user message for resumed sessions.
  * When resuming, CLI already has the full conversation history in its session file.
  * Sending the full history would duplicate context and waste tokens.
  */
-export function extractLatestUserMessage(messages) {
+export function extractLatestUserMessage(messages: OpenAIChatMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === "user") {
             return extractText(messages[i].content);
@@ -378,6 +445,7 @@ export function extractLatestUserMessage(messages) {
     // Fallback: use full prompt if no user message found
     return messagesToPrompt(messages);
 }
+
 /**
  * Convert OpenAI chat request to CLI input format
  *
@@ -385,10 +453,11 @@ export function extractLatestUserMessage(messages) {
  * @param hasExistingSession - If true, only extract the latest user message
  *                             (CLI will resume from saved session with full history)
  */
-export function openaiToCli(request, hasExistingSession = false) {
+export function openaiToCli(request: OpenAIChatRequest, hasExistingSession = false): CliInput {
     const prompt = hasExistingSession
         ? extractLatestUserMessage(request.messages)
         : messagesToPrompt(request.messages);
+
     return {
         prompt,
         // Don't re-send system prompt on resume — CLI already has it from the session
@@ -398,4 +467,3 @@ export function openaiToCli(request, hasExistingSession = false) {
         isResuming: hasExistingSession,
     };
 }
-//# sourceMappingURL=openai-to-cli.js.map

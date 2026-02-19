@@ -19,3 +19,4 @@ export declare function createDoneChunk(requestId: string, model: string): OpenA
  * Convert Claude CLI result to OpenAI non-streaming response
  */
 export declare function cliResultToOpenai(result: ClaudeCliResult, requestId: string): OpenAIChatResponse;
+//# sourceMappingURL=cli-to-openai.d.ts.map

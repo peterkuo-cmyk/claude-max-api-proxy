@@ -2,6 +2,7 @@
  * Types for Claude Code CLI JSON streaming output
  * Based on research from PROTOCOL.md
  */
+
 export interface ClaudeCliInit {
     type: "system";
     subtype: "init";
@@ -16,6 +17,7 @@ export interface ClaudeCliInit {
     plugins: unknown[];
     uuid: string;
 }
+
 export interface ClaudeCliHookStarted {
     type: "system";
     subtype: "hook_started";
@@ -24,6 +26,7 @@ export interface ClaudeCliHookStarted {
     hook_event: string;
     session_id: string;
 }
+
 export interface ClaudeCliHookResponse {
     type: "system";
     subtype: "hook_response";
@@ -32,10 +35,12 @@ export interface ClaudeCliHookResponse {
     exit_code: number;
     outcome: "success" | "error";
 }
+
 export interface ClaudeCliAssistantContent {
     type: "text";
     text: string;
 }
+
 export interface ClaudeCliAssistant {
     type: "assistant";
     message: {
@@ -55,6 +60,7 @@ export interface ClaudeCliAssistant {
     session_id: string;
     uuid: string;
 }
+
 export interface ClaudeCliResult {
     type: "result";
     subtype: "success" | "error";
@@ -77,15 +83,18 @@ export interface ClaudeCliResult {
         costUSD: number;
     }>;
 }
+
 export interface ClaudeCliSystemMessage {
     type: "system";
     subtype: string;
     [key: string]: unknown;
 }
+
 export interface ClaudeCliStreamEvent {
     type: "stream_event";
     event: {
-        type: "message_start" | "content_block_start" | "content_block_delta" | "content_block_stop" | "message_delta" | "message_stop";
+        type: "message_start" | "content_block_start" | "content_block_delta" |
+              "content_block_stop" | "message_delta" | "message_stop";
         index?: number;
         delta?: {
             type: "text_delta";
@@ -112,10 +121,32 @@ export interface ClaudeCliStreamEvent {
     session_id: string;
     uuid: string;
 }
-export type ClaudeCliMessage = ClaudeCliInit | ClaudeCliHookStarted | ClaudeCliHookResponse | ClaudeCliAssistant | ClaudeCliResult | ClaudeCliStreamEvent | ClaudeCliSystemMessage;
-export declare function isAssistantMessage(msg: ClaudeCliMessage): msg is ClaudeCliAssistant;
-export declare function isResultMessage(msg: ClaudeCliMessage): msg is ClaudeCliResult;
-export declare function isStreamEvent(msg: ClaudeCliMessage): msg is ClaudeCliStreamEvent;
-export declare function isContentDelta(msg: ClaudeCliMessage): msg is ClaudeCliStreamEvent;
-export declare function isSystemInit(msg: ClaudeCliMessage): msg is ClaudeCliInit;
-//# sourceMappingURL=claude-cli.d.ts.map
+
+export type ClaudeCliMessage =
+    | ClaudeCliInit
+    | ClaudeCliHookStarted
+    | ClaudeCliHookResponse
+    | ClaudeCliAssistant
+    | ClaudeCliResult
+    | ClaudeCliStreamEvent
+    | ClaudeCliSystemMessage;
+
+export function isAssistantMessage(msg: ClaudeCliMessage): msg is ClaudeCliAssistant {
+    return msg.type === "assistant";
+}
+
+export function isResultMessage(msg: ClaudeCliMessage): msg is ClaudeCliResult {
+    return msg.type === "result";
+}
+
+export function isStreamEvent(msg: ClaudeCliMessage): msg is ClaudeCliStreamEvent {
+    return msg.type === "stream_event";
+}
+
+export function isContentDelta(msg: ClaudeCliMessage): msg is ClaudeCliStreamEvent {
+    return isStreamEvent(msg) && msg.event.type === "content_block_delta";
+}
+
+export function isSystemInit(msg: ClaudeCliMessage): msg is ClaudeCliInit {
+    return msg.type === "system" && (msg as any).subtype === "init";
+}

@@ -1,11 +1,5 @@
-/**
- * Session Manager
- *
- * Maps client conversation IDs to Claude CLI session IDs
- * for maintaining conversation context across requests.
- */
 export interface SessionMapping {
-    conversationId: string;
+    clawdbotId: string;
     claudeSessionId: string;
     createdAt: number;
     lastUsedAt: number;
@@ -23,17 +17,17 @@ declare class SessionManager {
      */
     save(): Promise<void>;
     /**
-     * Get or create a Claude session ID for a client conversation
+     * Get or create a Claude session ID for a conversation
      */
-    getOrCreate(conversationId: string, model?: string): string;
+    getOrCreate(clawdbotId: string, model?: string): string;
     /**
      * Get existing session if it exists
      */
-    get(conversationId: string): SessionMapping | undefined;
+    get(clawdbotId: string): SessionMapping | undefined;
     /**
      * Delete a session
      */
-    delete(conversationId: string): boolean;
+    delete(clawdbotId: string): boolean;
     /**
      * Clean up expired sessions
      */
@@ -49,3 +43,4 @@ declare class SessionManager {
 }
 export declare const sessionManager: SessionManager;
 export {};
+//# sourceMappingURL=manager.d.ts.map

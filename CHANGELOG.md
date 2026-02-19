@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.3.0] - 2026-02-19
+
+### TypeScript Source Code
+- **Added `src/` directory with full TypeScript source** — the project now ships
+  with complete, readable source code instead of only compiled `dist/` output.
+- Added `tsconfig.json` for building from source (`npm run build`).
+
+### NO_REPLY Fix (OpenClaw Integration)
+- **`sanitizeSystemPrompt()`** — strips OpenClaw's `NO_REPLY`, `HEARTBEAT_OK`,
+  and `Tooling` sections from the system prompt before passing to Claude CLI.
+  Previously, Claude CLI would follow the "respond with NO_REPLY" instruction,
+  causing the gateway to suppress all responses as silent replies.
+- **NO_REPLY history filtering** — assistant messages containing only `"NO_REPLY"`
+  are now skipped when building conversation history, preventing the model from
+  continuing the NO_REPLY pattern.
+
+### Content Format Handling
+- **`extractText()`** — handles both string and array content formats from the
+  OpenClaw gateway. Previously caused `500 msg.content.trim is not a function`
+  when content was sent as `[{type:"text", text:"..."}]`.
+
+### Streaming Changes
+- **Replaced SmartStream with direct delta streaming** — each `content_delta`
+  event is now immediately written to the SSE response stream. The previous
+  SmartStream buffer (which held deltas until the final turn) is removed.
+
 ## [1.2.0] - 2026-02-16
 
 ### Progress Notifications

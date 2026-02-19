@@ -1,8 +1,3 @@
-/**
- * Express HTTP Server
- *
- * Provides OpenAI-compatible API endpoints that wrap Claude Code CLI
- */
 import { Server } from "http";
 export interface ServerConfig {
     port: number;
@@ -20,3 +15,4 @@ export declare function stopServer(): Promise<void>;
  * Get the current server instance
  */
 export declare function getServer(): Server | null;
+//# sourceMappingURL=index.d.ts.map

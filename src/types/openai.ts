@@ -2,15 +2,13 @@
  * Types for OpenAI-compatible API
  * Used for OpenClaw / Clawdbot integration
  */
+
 export interface OpenAIChatMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string | Array<{
-        type: string;
-        text?: string;
-        [key: string]: unknown;
-    }>;
+    content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
     tool_calls?: unknown[];
 }
+
 export interface OpenAIChatRequest {
     model: string;
     messages: OpenAIChatMessage[];
@@ -22,6 +20,7 @@ export interface OpenAIChatRequest {
     presence_penalty?: number;
     user?: string;
 }
+
 export interface OpenAIChatResponseChoice {
     index: number;
     message: {
@@ -30,6 +29,7 @@ export interface OpenAIChatResponseChoice {
     };
     finish_reason: "stop" | "length" | "content_filter" | null;
 }
+
 export interface OpenAIChatResponse {
     id: string;
     object: "chat.completion";
@@ -42,15 +42,18 @@ export interface OpenAIChatResponse {
         total_tokens: number;
     };
 }
+
 export interface OpenAIChatChunkDelta {
     role?: "assistant";
     content?: string;
 }
+
 export interface OpenAIChatChunkChoice {
     index: number;
     delta: OpenAIChatChunkDelta;
     finish_reason: "stop" | "length" | "content_filter" | null;
 }
+
 export interface OpenAIChatChunk {
     id: string;
     object: "chat.completion.chunk";
@@ -58,16 +61,19 @@ export interface OpenAIChatChunk {
     model: string;
     choices: OpenAIChatChunkChoice[];
 }
+
 export interface OpenAIModel {
     id: string;
     object: "model";
     owned_by: string;
     created?: number;
 }
+
 export interface OpenAIModelList {
     object: "list";
     data: OpenAIModel[];
 }
+
 export interface OpenAIError {
     error: {
         message: string;
@@ -75,4 +81,3 @@ export interface OpenAIError {
         code: string | null;
     };
 }
-//# sourceMappingURL=openai.d.ts.map
