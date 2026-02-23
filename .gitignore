@@ -6,3 +6,4 @@ node_modules/
 *.log
 .env
 .claude-code-cli-sessions.json
+package-lock.json

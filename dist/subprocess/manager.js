@@ -27,7 +27,7 @@ export class ClaudeSubprocess extends EventEmitter {
                 // Use spawn() for security - no shell interpretation
                 this.process = spawn("claude", args, {
                     cwd: options.cwd || PROXY_CWD,
-                    env: { ...process.env },
+                    env: { ...process.env, CLAUDECODE: undefined },
                     stdio: ["pipe", "pipe", "pipe"],
                 });
                 // Set activity timeout (resets on each stdout data)

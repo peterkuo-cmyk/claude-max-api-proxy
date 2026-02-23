@@ -120,6 +120,7 @@ const MODEL_MAP = {
     "claude-opus-4-20250514": "claude-opus-4-20250514",
     // Sonnet family
     "claude-sonnet-4": "sonnet",
+    "claude-sonnet-4-6": "sonnet",
     "claude-sonnet-4-5": "sonnet",
     "claude-sonnet-4-5-20250929": "sonnet",
     "claude-sonnet-4-0": "claude-sonnet-4-20250514",
