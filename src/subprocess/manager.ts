@@ -70,7 +70,11 @@ export class ClaudeSubprocess extends EventEmitter {
                     env: {
                         ...process.env,
                         CLAUDECODE: undefined,
-                        // Ensure oc-tool can reach the gateway
+                        // Ensure oc-tool is findable and can reach the gateway
+                        PATH: [
+                            path.join(process.env.HOME || "/tmp", ".openclaw", "bin"),
+                            process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+                        ].join(":"),
                         OPENCLAW_GATEWAY_TOKEN: process.env.OPENCLAW_GATEWAY_TOKEN,
                         OPENCLAW_GATEWAY_URL: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
                     },
