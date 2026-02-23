@@ -27,7 +27,13 @@ export class ClaudeSubprocess extends EventEmitter {
                 // Use spawn() for security - no shell interpretation
                 this.process = spawn("claude", args, {
                     cwd: options.cwd || PROXY_CWD,
-                    env: { ...process.env, CLAUDECODE: undefined },
+                    env: {
+                        ...process.env,
+                        CLAUDECODE: undefined,
+                        // Ensure oc-tool can reach the gateway
+                        OPENCLAW_GATEWAY_TOKEN: process.env.OPENCLAW_GATEWAY_TOKEN,
+                        OPENCLAW_GATEWAY_URL: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
+                    },
                     stdio: ["pipe", "pipe", "pipe"],
                 });
                 // Set activity timeout (resets on each stdout data)
