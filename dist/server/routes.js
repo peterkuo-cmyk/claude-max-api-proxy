@@ -252,7 +252,9 @@ export async function handleChatCompletions(req, res) {
     }
     catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
+        const stack = error instanceof Error ? error.stack : "";
         console.error("[handleChatCompletions] Error:", message);
+        console.error("[handleChatCompletions] Stack:", stack);
         if (!res.headersSent) {
             res.status(500).json({
                 error: { message, type: "server_error", code: null },
