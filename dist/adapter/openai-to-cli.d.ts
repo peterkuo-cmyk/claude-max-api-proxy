@@ -33,6 +33,19 @@ export declare function extractSystemPrompt(messages: OpenAIChatMessage[]): stri
  */
 export declare function messagesToPrompt(messages: OpenAIChatMessage[]): string;
 /**
+ * The conversation format uses [User] / [Assistant] tags.
+ * If Claude doesn't stop cleanly, it may generate a continuation
+ * that starts with "\n[User]\n" — bleeding the next human turn's
+ * metadata into the assistant response.
+ *
+ * This strips everything from the first occurrence of "\n[User]"
+ * onward, preventing metadata leakage into delivered messages.
+ *
+ * Also handles "\nHuman:" (legacy format) and
+ * "\n[Human]" (alternative format) for robustness.
+ */
+export declare function stripAssistantBleed(text: string): string;
+/**
  * Extract only the latest user message for resumed sessions.
  * When resuming, CLI already has the full conversation history in its session file.
  * Sending the full history would duplicate context and waste tokens.

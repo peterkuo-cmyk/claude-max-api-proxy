@@ -7,3 +7,4 @@ node_modules/
 .env
 .claude-code-cli-sessions.json
 package-lock.json
+start-maxproxy.sh

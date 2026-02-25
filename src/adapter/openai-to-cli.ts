@@ -432,6 +432,40 @@ export function messagesToPrompt(messages: OpenAIChatMessage[]): string {
     return parts.join("\n\n").trim();
 }
 
+// ─── Stop-sequence bleed stripping ────────────────────────────────
+
+/**
+ * The conversation format uses [User] / [Assistant] tags.
+ * If Claude doesn't stop cleanly, it may generate a continuation
+ * that starts with "\n[User]\n" — bleeding the next human turn's
+ * metadata into the assistant response.
+ *
+ * This strips everything from the first occurrence of "\n[User]"
+ * onward, preventing metadata leakage into delivered messages.
+ *
+ * Also handles "\nHuman:" (legacy format) and
+ * "\n[Human]" (alternative format) for robustness.
+ */
+export function stripAssistantBleed(text: string): string {
+    // Patterns Claude may hallucinate as the start of the next human turn
+    const BLEED_PATTERNS = ["\n[User]", "\n[Human]", "\nHuman:"];
+    let cutAt = -1;
+    for (const pattern of BLEED_PATTERNS) {
+        const idx = text.indexOf(pattern);
+        if (idx !== -1 && (cutAt === -1 || idx < cutAt)) {
+            cutAt = idx;
+        }
+    }
+    if (cutAt !== -1) {
+        const stripped = text.slice(0, cutAt).trimEnd();
+        console.error(
+            `[stripAssistantBleed] Stripped ${text.length - cutAt} chars of bleed at offset ${cutAt}`
+        );
+        return stripped;
+    }
+    return text;
+}
+
 /**
  * Extract only the latest user message for resumed sessions.
  * When resuming, CLI already has the full conversation history in its session file.

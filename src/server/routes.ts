@@ -11,7 +11,7 @@ import path from "path";
 import fs from "fs";
 import { ClaudeSubprocess } from "../subprocess/manager.js";
 import type { SubprocessOptions } from "../subprocess/manager.js";
-import { openaiToCli, extractModel } from "../adapter/openai-to-cli.js";
+import { openaiToCli, extractModel, stripAssistantBleed } from "../adapter/openai-to-cli.js";
 import type { CliInput } from "../adapter/openai-to-cli.js";
 import { cliResultToOpenai, createDoneChunk } from "../adapter/cli-to-openai.js";
 import { sessionManager } from "../session/manager.js";
@@ -315,6 +315,86 @@ async function handleStreamingResponse(
         let isComplete = false;
         let isFirst = true;
 
+        // ── Bleed detection state ──────────────────────────────────
+        // We accumulate streamed text to detect [User]/[Human] bleed patterns.
+        // Once a bleed sentinel is detected, we stop forwarding further deltas.
+        let accumulated = "";
+        let bleedDetected = false;
+        // Longest sentinel we watch for, so we know how much tail to hold back
+        const BLEED_SENTINELS = ["\n[User]", "\n[Human]", "\nHuman:"];
+        const MAX_SENTINEL_LEN = Math.max(...BLEED_SENTINELS.map((s) => s.length));
+
+        /**
+         * Write a delta chunk to the SSE stream.
+         */
+        function writeDelta(text: string): void {
+            if (!text || res.writableEnded) return;
+            const chunk = {
+                id: `chatcmpl-${requestId}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: lastModel,
+                choices: [{
+                    index: 0,
+                    delta: {
+                        role: isFirst ? ("assistant" as const) : undefined,
+                        content: text,
+                    },
+                    finish_reason: null,
+                }],
+            };
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            isFirst = false;
+        }
+
+        /**
+         * Process an incoming delta with bleed detection.
+         * We keep a tail buffer (MAX_SENTINEL_LEN chars) unwritten until we're
+         * sure it doesn't start a bleed pattern — this prevents partial sentinels
+         * (split across two deltas) from leaking through.
+         */
+        function processDelta(incoming: string): void {
+            if (bleedDetected || res.writableEnded) return;
+
+            accumulated += incoming;
+
+            // Check if the accumulated text contains a bleed sentinel
+            const safe = stripAssistantBleed(accumulated);
+            if (safe.length < accumulated.length) {
+                // Bleed found — write the safe portion and stop
+                bleedDetected = true;
+                // Only write the part we haven't written yet
+                const alreadyWritten = accumulated.length - incoming.length;
+                const safeNew = safe.slice(alreadyWritten);
+                if (safeNew) writeDelta(safeNew);
+                console.error("[Stream] Bleed detected — halting delta stream");
+                return;
+            }
+
+            // No bleed yet, but hold back the last MAX_SENTINEL_LEN chars as a
+            // look-ahead buffer in case a sentinel straddles two delta chunks.
+            const safeLen = Math.max(0, accumulated.length - MAX_SENTINEL_LEN);
+            const alreadyFlushed = accumulated.length - incoming.length;
+            const toFlush = safeLen - alreadyFlushed;
+            if (toFlush > 0) {
+                writeDelta(accumulated.slice(alreadyFlushed, alreadyFlushed + toFlush));
+            }
+        }
+
+        /**
+         * Flush remaining buffered tail at end of stream.
+         * Run through stripAssistantBleed one more time for safety.
+         */
+        function flushTail(): void {
+            if (bleedDetected || res.writableEnded) return;
+            const alreadyFlushed = Math.max(0, accumulated.length - MAX_SENTINEL_LEN);
+            const tail = accumulated.slice(alreadyFlushed);
+            if (!tail) return;
+            const safe = stripAssistantBleed(accumulated).slice(alreadyFlushed);
+            if (safe) writeDelta(safe);
+        }
+        // ──────────────────────────────────────────────────────────
+
         // Progress reporter for Telegram
         const telegramChatId = process.env.TELEGRAM_NOTIFY_ID || null;
         const progress = new ProgressReporter(telegramChatId);
@@ -339,27 +419,11 @@ async function handleStreamingResponse(
             }
         });
 
-        // Stream each content delta directly to the client
+        // Stream each content delta through bleed detection before forwarding
         subprocess.on("content_delta", (event: any) => {
             const text = event.event.delta?.text || "";
-            if (!text || res.writableEnded) return;
-
-            const chunk = {
-                id: `chatcmpl-${requestId}`,
-                object: "chat.completion.chunk",
-                created: Math.floor(Date.now() / 1000),
-                model: lastModel,
-                choices: [{
-                    index: 0,
-                    delta: {
-                        role: isFirst ? ("assistant" as const) : undefined,
-                        content: text,
-                    },
-                    finish_reason: null,
-                }],
-            };
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            isFirst = false;
+            if (!text) return;
+            processDelta(text);
         });
 
         // Track model name from assistant messages
@@ -369,6 +433,8 @@ async function handleStreamingResponse(
 
         subprocess.on("result", (_result: any) => {
             isComplete = true;
+            // Flush any buffered tail through bleed detection before finishing
+            flushTail();
             // Clean up progress message before sending final response
             progress.cleanup().catch(() => {});
             if (!res.writableEnded) {
@@ -455,6 +521,11 @@ async function handleNonStreamingResponse(
 
         subprocess.on("close", (code) => {
             if (finalResult) {
+                // Strip any [User]/[Human] bleed from the final result text
+                finalResult = {
+                    ...finalResult,
+                    result: stripAssistantBleed(finalResult.result ?? ""),
+                };
                 res.json(cliResultToOpenai(finalResult, requestId));
             } else if (!res.headersSent) {
                 res.status(500).json({
