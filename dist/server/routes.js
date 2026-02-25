@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { ClaudeSubprocess } from "../subprocess/manager.js";
 import { openaiToCli, extractModel, stripAssistantBleed } from "../adapter/openai-to-cli.js";
-import { cliResultToOpenai, createDoneChunk } from "../adapter/cli-to-openai.js";
+import { cliResultToOpenai, createDoneChunk, parseToolCalls, createToolCallChunks } from "../adapter/cli-to-openai.js";
 import { sessionManager } from "../session/manager.js";
 // ── Telegram Progress Reporter ─────────────────────────────────────
 // Shows real-time progress updates in Telegram while the CLI runs
@@ -243,8 +243,12 @@ export async function handleChatCompletions(req, res) {
             if (conversationId)
                 sessionManager.delete(conversationId);
         });
+        // External tool calling: present and not explicitly disabled
+        const hasTools = Array.isArray(body.tools) &&
+            body.tools.length > 0 &&
+            body.tool_choice !== "none";
         if (stream) {
-            await handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts);
+            await handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts, hasTools);
         }
         else {
             await handleNonStreamingResponse(res, subprocess, cliInput, requestId, subOpts);
@@ -267,7 +271,7 @@ export async function handleChatCompletions(req, res) {
  *
  * Each content_delta event is immediately written to the response stream.
  */
-async function handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts) {
+async function handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts, hasTools = false) {
     // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -382,32 +386,70 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
                 }
             }
         });
-        // Stream each content delta through bleed detection before forwarding
-        subprocess.on("content_delta", (event) => {
-            const text = event.event.delta?.text || "";
-            if (!text)
-                return;
-            processDelta(text);
-        });
         // Track model name from assistant messages
         subprocess.on("assistant", (message) => {
             lastModel = message.message.model;
         });
-        subprocess.on("result", (_result) => {
-            isComplete = true;
-            // Flush any buffered tail through bleed detection before finishing
-            flushTail();
-            // Clean up progress message before sending final response
-            progress.cleanup().catch(() => { });
-            if (!res.writableEnded) {
-                // Send final done chunk with finish_reason
-                const doneChunk = createDoneChunk(requestId, lastModel);
-                res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
-                res.write("data: [DONE]\n\n");
-                res.end();
-            }
-            resolve();
-        });
+        if (hasTools) {
+            // ── Tool mode: buffer full response, parse tool calls at the end ──
+            // We cannot stream incrementally because <tool_call> markers may span
+            // multiple delta chunks. Buffer everything and emit synthesized chunks.
+            let toolBuffer = "";
+            subprocess.on("content_delta", (event) => {
+                toolBuffer += event.event.delta?.text || "";
+            });
+            subprocess.on("result", (_result) => {
+                isComplete = true;
+                progress.cleanup().catch(() => { });
+                // Apply bleed strip then parse tool calls
+                const safeText = stripAssistantBleed(toolBuffer);
+                const { hasToolCalls, toolCalls, textWithoutToolCalls } = parseToolCalls(safeText);
+                if (!res.writableEnded) {
+                    if (hasToolCalls) {
+                        // Emit synthesized tool call SSE chunks
+                        const chunks = createToolCallChunks(toolCalls, requestId, lastModel);
+                        for (const chunk of chunks) {
+                            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                        }
+                    }
+                    else {
+                        // No tool calls — emit full text as a single content chunk
+                        if (textWithoutToolCalls) {
+                            writeDelta(textWithoutToolCalls);
+                        }
+                        const doneChunk = createDoneChunk(requestId, lastModel);
+                        res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+                    }
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                }
+                resolve();
+            });
+        }
+        else {
+            // ── Normal mode: stream deltas through bleed detection ────────────
+            subprocess.on("content_delta", (event) => {
+                const text = event.event.delta?.text || "";
+                if (!text)
+                    return;
+                processDelta(text);
+            });
+            subprocess.on("result", (_result) => {
+                isComplete = true;
+                // Flush any buffered tail through bleed detection before finishing
+                flushTail();
+                // Clean up progress message before sending final response
+                progress.cleanup().catch(() => { });
+                if (!res.writableEnded) {
+                    // Send final done chunk with finish_reason
+                    const doneChunk = createDoneChunk(requestId, lastModel);
+                    res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                }
+                resolve();
+            });
+        }
         subprocess.on("error", (error) => {
             console.error("[Streaming] Error:", error.message);
             // Clean up progress message

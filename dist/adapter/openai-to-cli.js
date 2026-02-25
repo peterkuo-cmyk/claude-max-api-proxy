@@ -6,6 +6,8 @@
  *   - array:  [{type:"text", text:"hello"}, {type:"image", ...}]
  */
 function extractText(content) {
+    if (content === null || content === undefined)
+        return "";
     if (typeof content === "string")
         return content;
     if (Array.isArray(content)) {
@@ -90,6 +92,17 @@ function cleanAssistantContent(content) {
     cleaned = cleaned.replace(/<(apply_patch|process|media|find|grep|ls)[>\s][\s\S]*?<\/\1>/gi, (_, tool) => `[${tool} executed]`);
     // Clean leftover unmatched opening tags
     cleaned = cleaned.replace(new RegExp(`<(${XML_TOOL_TAGS.join("|")})(\\s[^>]*)?>`, "gi"), (_, tool) => `[${tool}]`);
+    // Strip <tool_call>...</tool_call> markers from history (these are text-based
+    // tool calls from prior turns — summarize them to prevent format confusion)
+    cleaned = cleaned.replace(/<tool_call>([\s\S]*?)<\/tool_call>/g, (_, inner) => {
+        try {
+            const parsed = JSON.parse(inner.trim());
+            return `[tool_call: ${parsed.name || "unknown"}]`;
+        }
+        catch {
+            return "[tool_call]";
+        }
+    });
     // Collapse excessive consecutive summaries
     cleaned = cleaned.replace(/(\[[\w\s:\/._-]+\]\s*){4,}/g, (match) => {
         const items = match.trim().split('\n').filter(Boolean);
@@ -304,13 +317,47 @@ For commands that might run silently for a long time (large downloads, heavy pro
 - Do NOT include internal thinking like "Let me check..." in your reply
 - Reply in the SAME language the user used (Chinese → Chinese, English → English)
 - Be concise — your entire output becomes one Telegram message`;
+// ─── Tool schema serialization ─────────────────────────────────────
+/**
+ * Serialize OpenAI tool definitions into a prompt block that instructs
+ * the model to emit <tool_call>...</tool_call> markers as text output.
+ *
+ * The model is told:
+ *  - Exactly what format to use
+ *  - That it must stop after emitting tool calls (do not add prose)
+ *  - That arguments must be valid JSON objects (not strings)
+ */
+function serializeToolsToPrompt(tools) {
+    const toolsJson = JSON.stringify(tools, null, 2);
+    return `
+
+## External Tools (Text-Based Tool Calling)
+
+You have access to the following external tools. When you need to call a tool, output EXACTLY this format — one tool call per line, no surrounding markdown, no commentary before or after:
+
+<tool_call>{"id":"call_1","name":"<function_name>","arguments":<args_as_json_object>}</tool_call>
+
+Rules:
+- id must be a unique short alphanumeric string (e.g. "call_1", "call_abc123")
+- name must exactly match one of the tool names listed in the schema below
+- arguments must be a valid JSON object (NOT a JSON string), matching the parameter schema
+- You may output multiple tool calls, one per line
+- After outputting tool calls, STOP — do not add any further text until you receive tool results
+- If no tool call is needed, respond normally without any <tool_call> markers
+
+### Tool Schema
+
+<tools>
+${toolsJson}
+</tools>`;
+}
 // ─── Prompt conversion ─────────────────────────────────────────────
 /**
  * Extract system prompt from messages (returned separately for --system-prompt flag).
  * Sanitizes OpenClaw's NO_REPLY/Heartbeat/Tooling directives, then appends
- * CLI tool instructions.
+ * CLI tool instructions. If external tools are provided, also injects their schema.
  */
-export function extractSystemPrompt(messages) {
+export function extractSystemPrompt(messages, tools) {
     const systemParts = [];
     for (const msg of messages) {
         if (msg.role === "system") {
@@ -321,7 +368,12 @@ export function extractSystemPrompt(messages) {
     // Sanitize OpenClaw-specific directives that confuse CLI
     const sanitized = sanitizeSystemPrompt(base);
     // Append CLI tool instruction to ensure native tool usage
-    return (sanitized + CLI_TOOL_INSTRUCTION).trim() || null;
+    let prompt = sanitized + CLI_TOOL_INSTRUCTION;
+    // Append external tool schema if provided
+    if (tools && tools.length > 0) {
+        prompt += serializeToolsToPrompt(tools);
+    }
+    return prompt.trim() || null;
 }
 /**
  * Convert OpenAI messages array to a single prompt string for Claude CLI
@@ -331,8 +383,13 @@ export function extractSystemPrompt(messages) {
  * XML tool patterns in assistant messages are cleaned by cleanAssistantContent()
  * to prevent the model from mimicking XML format instead of using native tools.
  * NO_REPLY assistant messages are filtered out (OpenClaw silent reply tokens).
+ *
+ * @param hasExternalTools - When true, assistant messages with tool_calls are
+ *   rendered as <tool_call> markers (for multi-turn tool conversations), and
+ *   tool role messages (tool results) are rendered as [Tool Result:] blocks.
+ *   When false, both are skipped (CLI handles tools internally).
  */
-export function messagesToPrompt(messages) {
+export function messagesToPrompt(messages, hasExternalTools = false) {
     const nonSystemMessages = messages.filter((msg) => msg.role !== "system");
     const parts = [];
     for (const msg of nonSystemMessages) {
@@ -345,6 +402,31 @@ export function messagesToPrompt(messages) {
                 // Skip NO_REPLY responses — OpenClaw silent tokens, not real content
                 if (!text || text.trim() === "NO_REPLY")
                     break;
+                if (hasExternalTools && msg.tool_calls && msg.tool_calls.length > 0) {
+                    // Render prior tool calls as text markers so the model understands
+                    // what it previously requested (multi-turn tool conversation)
+                    const markers = msg.tool_calls
+                        .map((tc) => {
+                        const args = typeof tc.function.arguments === "string"
+                            ? tc.function.arguments
+                            : JSON.stringify(tc.function.arguments);
+                        let argsObj;
+                        try {
+                            argsObj = JSON.parse(args);
+                        }
+                        catch {
+                            argsObj = args;
+                        }
+                        return `<tool_call>${JSON.stringify({
+                            id: tc.id,
+                            name: tc.function.name,
+                            arguments: argsObj,
+                        })}</tool_call>`;
+                    })
+                        .join("\n");
+                    parts.push(`[Assistant]\n${markers}`);
+                    break;
+                }
                 // Skip assistant messages that are purely tool_calls with no text
                 if (msg.tool_calls && (!text || text === "null"))
                     break;
@@ -355,9 +437,17 @@ export function messagesToPrompt(messages) {
                 }
                 break;
             }
-            case "tool":
-                // Skip tool results — the CLI has its own tool system
+            case "tool": {
+                if (hasExternalTools) {
+                    // Render tool results so the model receives the outcome
+                    const label = msg.tool_call_id
+                        ? `Tool Result: ${msg.tool_call_id}${msg.name ? ` (${msg.name})` : ""}`
+                        : `Tool Result`;
+                    parts.push(`[${label}]\n${text}`);
+                }
+                // When not using external tools, skip (CLI has its own tool system)
                 break;
+            }
             default:
                 parts.push(text);
                 break;
@@ -417,13 +507,19 @@ export function extractLatestUserMessage(messages) {
  *                             (CLI will resume from saved session with full history)
  */
 export function openaiToCli(request, hasExistingSession = false) {
+    // External tools: present and not explicitly disabled
+    const hasExternalTools = Array.isArray(request.tools) &&
+        request.tools.length > 0 &&
+        request.tool_choice !== "none";
     const prompt = hasExistingSession
         ? extractLatestUserMessage(request.messages)
-        : messagesToPrompt(request.messages);
+        : messagesToPrompt(request.messages, hasExternalTools);
     return {
         prompt,
         // Don't re-send system prompt on resume — CLI already has it from the session
-        systemPrompt: hasExistingSession ? null : extractSystemPrompt(request.messages),
+        systemPrompt: hasExistingSession
+            ? null
+            : extractSystemPrompt(request.messages, hasExternalTools ? request.tools : undefined),
         model: extractModel(request.model),
         sessionId: request.user,
         isResuming: hasExistingSession,

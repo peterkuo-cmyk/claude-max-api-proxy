@@ -1,7 +1,7 @@
 /**
  * Converts OpenAI chat request format to Claude CLI input
  */
-import type { OpenAIChatRequest, OpenAIChatMessage } from "../types/openai.js";
+import type { OpenAIChatRequest, OpenAIChatMessage, OpenAITool } from "../types/openai.js";
 export type ClaudeModel = "opus" | "sonnet" | "haiku" | string;
 export interface CliInput {
     prompt: string;
@@ -19,9 +19,9 @@ export declare function extractModel(model: string): ClaudeModel;
 /**
  * Extract system prompt from messages (returned separately for --system-prompt flag).
  * Sanitizes OpenClaw's NO_REPLY/Heartbeat/Tooling directives, then appends
- * CLI tool instructions.
+ * CLI tool instructions. If external tools are provided, also injects their schema.
  */
-export declare function extractSystemPrompt(messages: OpenAIChatMessage[]): string | null;
+export declare function extractSystemPrompt(messages: OpenAIChatMessage[], tools?: OpenAITool[]): string | null;
 /**
  * Convert OpenAI messages array to a single prompt string for Claude CLI
  *
@@ -30,8 +30,13 @@ export declare function extractSystemPrompt(messages: OpenAIChatMessage[]): stri
  * XML tool patterns in assistant messages are cleaned by cleanAssistantContent()
  * to prevent the model from mimicking XML format instead of using native tools.
  * NO_REPLY assistant messages are filtered out (OpenClaw silent reply tokens).
+ *
+ * @param hasExternalTools - When true, assistant messages with tool_calls are
+ *   rendered as <tool_call> markers (for multi-turn tool conversations), and
+ *   tool role messages (tool results) are rendered as [Tool Result:] blocks.
+ *   When false, both are skipped (CLI handles tools internally).
  */
-export declare function messagesToPrompt(messages: OpenAIChatMessage[]): string;
+export declare function messagesToPrompt(messages: OpenAIChatMessage[], hasExternalTools?: boolean): string;
 /**
  * The conversation format uses [User] / [Assistant] tags.
  * If Claude doesn't stop cleanly, it may generate a continuation

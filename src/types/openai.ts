@@ -2,10 +2,56 @@
  * Types for OpenAI-compatible API
  */
 
+// ─── Tool definitions (sent in request) ────────────────────────────
+
+export interface OpenAIToolFunction {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>; // JSON Schema object
+}
+
+export interface OpenAITool {
+    type: "function";
+    function: OpenAIToolFunction;
+}
+
+// ─── Tool calls (returned in response / present in history) ────────
+
+export interface OpenAIToolCall {
+    id: string;
+    type: "function";
+    function: {
+        name: string;
+        arguments: string; // JSON string per OpenAI spec
+    };
+}
+
+/**
+ * Partial tool call used inside streaming chunk deltas.
+ * Only "index" is required; other fields are optional because
+ * argument-streaming chunks only carry {index, function.arguments}.
+ */
+export interface OpenAIToolCallDelta {
+    index: number;
+    id?: string;
+    type?: "function";
+    function?: {
+        name?: string;
+        arguments?: string;
+    };
+}
+
+// ─── Messages ──────────────────────────────────────────────────────
+
 export interface OpenAIChatMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
-    tool_calls?: unknown[];
+    /** null is valid for assistant messages that are pure tool calls */
+    content: string | null | Array<{ type: string; text?: string; [key: string]: unknown }>;
+    tool_calls?: OpenAIToolCall[];
+    /** Present on role="tool" messages — references the originating tool_call.id */
+    tool_call_id?: string;
+    /** Present on role="tool" messages — the function name */
+    name?: string;
 }
 
 export interface OpenAIChatRequest {
@@ -18,15 +64,20 @@ export interface OpenAIChatRequest {
     frequency_penalty?: number;
     presence_penalty?: number;
     user?: string;
+    tools?: OpenAITool[];
+    tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 }
+
+// ─── Non-streaming response ────────────────────────────────────────
 
 export interface OpenAIChatResponseChoice {
     index: number;
     message: {
         role: "assistant";
-        content: string;
+        content: string | null;
+        tool_calls?: OpenAIToolCall[];
     };
-    finish_reason: "stop" | "length" | "content_filter" | null;
+    finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
 }
 
 export interface OpenAIChatResponse {
@@ -42,15 +93,18 @@ export interface OpenAIChatResponse {
     };
 }
 
+// ─── Streaming chunks ──────────────────────────────────────────────
+
 export interface OpenAIChatChunkDelta {
     role?: "assistant";
-    content?: string;
+    content?: string | null;
+    tool_calls?: OpenAIToolCallDelta[];
 }
 
 export interface OpenAIChatChunkChoice {
     index: number;
     delta: OpenAIChatChunkDelta;
-    finish_reason: "stop" | "length" | "content_filter" | null;
+    finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
 }
 
 export interface OpenAIChatChunk {
@@ -60,4 +114,3 @@ export interface OpenAIChatChunk {
     model: string;
     choices: OpenAIChatChunkChoice[];
 }
-

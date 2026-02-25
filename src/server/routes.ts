@@ -13,7 +13,7 @@ import { ClaudeSubprocess } from "../subprocess/manager.js";
 import type { SubprocessOptions } from "../subprocess/manager.js";
 import { openaiToCli, extractModel, stripAssistantBleed } from "../adapter/openai-to-cli.js";
 import type { CliInput } from "../adapter/openai-to-cli.js";
-import { cliResultToOpenai, createDoneChunk } from "../adapter/cli-to-openai.js";
+import { cliResultToOpenai, createDoneChunk, parseToolCalls, createToolCallChunks } from "../adapter/cli-to-openai.js";
 import { sessionManager } from "../session/manager.js";
 
 // ── Telegram Progress Reporter ─────────────────────────────────────
@@ -270,8 +270,14 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
             if (conversationId) sessionManager.delete(conversationId);
         });
 
+        // External tool calling: present and not explicitly disabled
+        const hasTools =
+            Array.isArray(body.tools) &&
+            body.tools.length > 0 &&
+            body.tool_choice !== "none";
+
         if (stream) {
-            await handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts);
+            await handleStreamingResponse(req, res, subprocess, cliInput, requestId, subOpts, hasTools);
         } else {
             await handleNonStreamingResponse(res, subprocess, cliInput, requestId, subOpts);
         }
@@ -299,7 +305,8 @@ async function handleStreamingResponse(
     subprocess: ClaudeSubprocess,
     cliInput: CliInput,
     requestId: string,
-    subOpts: SubprocessOptions
+    subOpts: SubprocessOptions,
+    hasTools = false
 ): Promise<void> {
     // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -419,33 +426,74 @@ async function handleStreamingResponse(
             }
         });
 
-        // Stream each content delta through bleed detection before forwarding
-        subprocess.on("content_delta", (event: any) => {
-            const text = event.event.delta?.text || "";
-            if (!text) return;
-            processDelta(text);
-        });
-
         // Track model name from assistant messages
         subprocess.on("assistant", (message: any) => {
             lastModel = message.message.model;
         });
 
-        subprocess.on("result", (_result: any) => {
-            isComplete = true;
-            // Flush any buffered tail through bleed detection before finishing
-            flushTail();
-            // Clean up progress message before sending final response
-            progress.cleanup().catch(() => {});
-            if (!res.writableEnded) {
-                // Send final done chunk with finish_reason
-                const doneChunk = createDoneChunk(requestId, lastModel);
-                res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
-                res.write("data: [DONE]\n\n");
-                res.end();
-            }
-            resolve();
-        });
+        if (hasTools) {
+            // ── Tool mode: buffer full response, parse tool calls at the end ──
+            // We cannot stream incrementally because <tool_call> markers may span
+            // multiple delta chunks. Buffer everything and emit synthesized chunks.
+            let toolBuffer = "";
+
+            subprocess.on("content_delta", (event: any) => {
+                toolBuffer += event.event.delta?.text || "";
+            });
+
+            subprocess.on("result", (_result: any) => {
+                isComplete = true;
+                progress.cleanup().catch(() => {});
+
+                // Apply bleed strip then parse tool calls
+                const safeText = stripAssistantBleed(toolBuffer);
+                const { hasToolCalls, toolCalls, textWithoutToolCalls } =
+                    parseToolCalls(safeText);
+
+                if (!res.writableEnded) {
+                    if (hasToolCalls) {
+                        // Emit synthesized tool call SSE chunks
+                        const chunks = createToolCallChunks(toolCalls, requestId, lastModel);
+                        for (const chunk of chunks) {
+                            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                        }
+                    } else {
+                        // No tool calls — emit full text as a single content chunk
+                        if (textWithoutToolCalls) {
+                            writeDelta(textWithoutToolCalls);
+                        }
+                        const doneChunk = createDoneChunk(requestId, lastModel);
+                        res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+                    }
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                }
+                resolve();
+            });
+        } else {
+            // ── Normal mode: stream deltas through bleed detection ────────────
+            subprocess.on("content_delta", (event: any) => {
+                const text = event.event.delta?.text || "";
+                if (!text) return;
+                processDelta(text);
+            });
+
+            subprocess.on("result", (_result: any) => {
+                isComplete = true;
+                // Flush any buffered tail through bleed detection before finishing
+                flushTail();
+                // Clean up progress message before sending final response
+                progress.cleanup().catch(() => {});
+                if (!res.writableEnded) {
+                    // Send final done chunk with finish_reason
+                    const doneChunk = createDoneChunk(requestId, lastModel);
+                    res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                }
+                resolve();
+            });
+        }
 
         subprocess.on("error", (error: Error) => {
             console.error("[Streaming] Error:", error.message);
