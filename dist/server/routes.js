@@ -2,6 +2,105 @@ import { v4 as uuidv4 } from "uuid";
 import { spawn as nodeSpawn } from "child_process";
 import path from "path";
 import fs from "fs";
+// ── Active Request Tracker ────────────────────────────────────────
+// Tracks all in-flight CLI requests so /health can report IDLE vs BUSY
+const activeRequests = new Map();
+function registerRequest(id, model, conversationId = null, isSubagent = false) {
+    activeRequests.set(id, {
+        startedAt: Date.now(),
+        model,
+        lastTool: null,
+        toolHistory: [],
+        conversationId,
+        isSubagent,
+    });
+}
+function trackTool(id, toolName) {
+    const req = activeRequests.get(id);
+    if (!req) return;
+    req.lastTool = toolName;
+    if (req.toolHistory[req.toolHistory.length - 1] !== toolName) {
+        req.toolHistory.push(toolName);
+        if (req.toolHistory.length > 20) req.toolHistory = req.toolHistory.slice(-20);
+    }
+}
+function unregisterRequest(id) {
+    const req = activeRequests.get(id);
+    if (req?.isSubagent && req?.conversationId) {
+        const mutex = subagentMutexes.get(req.conversationId);
+        if (mutex) mutex.release();
+    }
+    activeRequests.delete(id);
+}
+function formatElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}m ${rem}s`;
+}
+// ── Auto-Subagent ─────────────────────────────────────────────────
+// Routes new messages to a subagent when main agent is busy >30s.
+// Max 2 concurrent agents per conversation: main + 1 subagent.
+const SUBAGENT_BUSY_THRESHOLD = 30_000;
+const SUBAGENT_CWD = path.join(process.env.HOME || "/tmp", ".openclaw", "workspace-subagent");
+try { fs.mkdirSync(SUBAGENT_CWD, { recursive: true }); } catch {}
+const subagentSessions = new Map();
+// key: conversationId → { subConvId, createdAt, lastUsedAt, requestCount, active, mainToolHistory }
+// Simple mutex per subConvId to serialize subagent requests
+const subagentMutexes = new Map();
+class SubagentMutex {
+    constructor() { this._locked = false; this._waiters = []; }
+    acquire() {
+        if (!this._locked) { this._locked = true; return Promise.resolve(); }
+        return new Promise(resolve => { this._waiters.push(resolve); });
+    }
+    release() {
+        if (this._waiters.length > 0) { this._waiters.shift()(); }
+        else { this._locked = false; }
+    }
+}
+function findBusyMainRequest(conversationId) {
+    const now = Date.now();
+    for (const [, info] of activeRequests) {
+        if (info.conversationId === conversationId && !info.isSubagent &&
+            (now - info.startedAt) > SUBAGENT_BUSY_THRESHOLD) {
+            return { ...info, elapsed: now - info.startedAt };
+        }
+    }
+    return null;
+}
+function findActiveSubagentRequest(subConvId) {
+    for (const [, info] of activeRequests) {
+        if (info.conversationId === subConvId && info.isSubagent) {
+            return { ...info, elapsed: Date.now() - info.startedAt };
+        }
+    }
+    return null;
+}
+function getOrCreateSubagentSession(conversationId, mainReq) {
+    const subConvId = `${conversationId}::subagent`;
+    let session = subagentSessions.get(conversationId);
+    if (!session) {
+        session = { subConvId, createdAt: Date.now(), lastUsedAt: Date.now(),
+                     requestCount: 0, active: true, mainToolHistory: mainReq.toolHistory || [] };
+        subagentSessions.set(conversationId, session);
+    } else {
+        session.lastUsedAt = Date.now();
+        session.active = true;
+        session.mainToolHistory = mainReq.toolHistory || [];
+    }
+    return session;
+}
+function deactivateSubagentSession(conversationId) {
+    const session = subagentSessions.get(conversationId);
+    if (session) session.active = false;
+}
+function getSubagentMutex(subConvId) {
+    let mutex = subagentMutexes.get(subConvId);
+    if (!mutex) { mutex = new SubagentMutex(); subagentMutexes.set(subConvId, mutex); }
+    return mutex;
+}
 import { ClaudeSubprocess } from "../subprocess/manager.js";
 import { openaiToCli, extractModel, stripAssistantBleed } from "../adapter/openai-to-cli.js";
 import { cliResultToOpenai, createDoneChunk, parseToolCalls, createToolCallChunks } from "../adapter/cli-to-openai.js";
@@ -207,29 +306,86 @@ export async function handleChatCompletions(req, res) {
         }
         // Session management: determine if we should resume an existing session
         const conversationId = body.user;
+        // ── Auto-Subagent routing decision ────────────────────────────
+        let effectiveConversationId = conversationId;
+        let isSubagentRequest = false;
+        let subagentSession = null;
+        if (conversationId) {
+            const mainBusyReq = findBusyMainRequest(conversationId);
+            if (mainBusyReq) {
+                const subConvId = `${conversationId}::subagent`;
+                subagentSession = getOrCreateSubagentSession(conversationId, mainBusyReq);
+                const subBusyReq = findActiveSubagentRequest(subConvId);
+                if (subBusyReq) {
+                    // Both main and subagent busy → notify, then wait for subagent
+                    const mainElapsed = formatElapsed(mainBusyReq.elapsed);
+                    const subElapsed = formatElapsed(subBusyReq.elapsed);
+                    notifyTelegram(
+                        `⚠️ 主代理和副代理都在忙碌中\n` +
+                        `🔹 主代理：${mainBusyReq.toolHistory.join(' → ') || '處理中'} (${mainElapsed})\n` +
+                        `🔹 副代理：${subBusyReq.toolHistory.join(' → ') || '處理中'} (${subElapsed})\n` +
+                        `你的訊息會在副代理完成後處理。`
+                    );
+                } else {
+                    // Only main busy → activate subagent
+                    notifyTelegram(
+                        `🔀 主代理忙碌中（已 ${formatElapsed(mainBusyReq.elapsed)}），副代理已啟動處理你的訊息`
+                    );
+                }
+                // Serialize subagent requests — wait if subagent is already processing
+                const mutex = getSubagentMutex(subConvId);
+                await mutex.acquire();
+                effectiveConversationId = subConvId;
+                isSubagentRequest = true;
+                subagentSession.requestCount++;
+                console.error(`[AutoSubagent] Routing to subagent: ${conversationId} → ${subConvId} (request #${subagentSession.requestCount})`);
+            } else {
+                // Main is not busy — deactivate subagent routing
+                deactivateSubagentSession(conversationId);
+            }
+        }
+        // ── Session lookup using effectiveConversationId ──────────────
         let hasExistingSession = false;
         let claudeSessionId;
-        if (conversationId) {
-            const existing = sessionManager.get(conversationId);
+        if (effectiveConversationId) {
+            const existing = sessionManager.get(effectiveConversationId);
             if (existing) {
                 hasExistingSession = true;
                 claudeSessionId = existing.claudeSessionId;
                 existing.lastUsedAt = Date.now();
                 sessionManager.save().catch((err) => console.error("[SessionManager] Save error:", err));
-                console.error(`[Session] Resuming: ${conversationId} -> ${claudeSessionId}`);
+                console.error(`[Session] Resuming: ${effectiveConversationId} -> ${claudeSessionId}`);
             }
             else {
-                claudeSessionId = sessionManager.getOrCreate(conversationId, extractModel(body.model));
-                console.error(`[Session] New: ${conversationId} -> ${claudeSessionId}`);
+                claudeSessionId = sessionManager.getOrCreate(effectiveConversationId, extractModel(body.model));
+                console.error(`[Session] New: ${effectiveConversationId} -> ${claudeSessionId}`);
             }
         }
         // Convert to CLI input format (only latest message if resuming)
         const cliInput = openaiToCli(body, hasExistingSession);
+        // ── Subagent system prompt injection ──────────────────────────
+        if (isSubagentRequest && subagentSession) {
+            const mainReq = findBusyMainRequest(conversationId);
+            const elapsed = mainReq ? formatElapsed(mainReq.elapsed) : '30s+';
+            const tools = mainReq?.toolHistory?.join(' → ') || '處理中';
+            const preamble = `\n\n## IMPORTANT: 你是臨時副代理\n` +
+                `主代理目前正在忙碌（已執行 ${elapsed}，工具：${tools}）。\n` +
+                `你負責處理使用者的新需求。你擁有完整工具能力。\n` +
+                `工作目錄：~/.openclaw/workspace-subagent/（與主代理隔離）。\n`;
+            if (cliInput.systemPrompt) {
+                cliInput.systemPrompt = preamble + '\n' + cliInput.systemPrompt;
+            } else {
+                cliInput.systemPrompt = preamble;
+            }
+        }
         // Build subprocess options with session info
         const subOpts = {
             model: cliInput.model,
             systemPrompt: cliInput.systemPrompt,
         };
+        if (isSubagentRequest) {
+            subOpts.cwd = SUBAGENT_CWD;
+        }
         if (hasExistingSession && claudeSessionId) {
             subOpts.resumeSessionId = claudeSessionId;
         }
@@ -237,11 +393,13 @@ export async function handleChatCompletions(req, res) {
             subOpts.sessionId = claudeSessionId;
         }
         const subprocess = new ClaudeSubprocess();
+        // Register this request for /health tracking
+        registerRequest(requestId, extractModel(body.model), effectiveConversationId, isSubagentRequest);
         // Handle resume failures: invalidate session so next request starts fresh
         subprocess.on("resume_failed", () => {
-            console.error(`[Session] Resume failed, invalidating: ${conversationId}`);
-            if (conversationId)
-                sessionManager.delete(conversationId);
+            console.error(`[Session] Resume failed, invalidating: ${effectiveConversationId}`);
+            if (effectiveConversationId)
+                sessionManager.delete(effectiveConversationId);
         });
         // External tool calling: present and not explicitly disabled
         const hasTools = Array.isArray(body.tools) &&
@@ -255,6 +413,7 @@ export async function handleChatCompletions(req, res) {
         }
     }
     catch (error) {
+        unregisterRequest(requestId);
         const message = error instanceof Error ? error.message : "Unknown error";
         const stack = error instanceof Error ? error.stack : "";
         console.error("[handleChatCompletions] Error:", message);
@@ -373,7 +532,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
             progress.cleanup().catch(() => { });
             resolve();
         });
-        // Detect tool calls for progress reporting
+        // Detect tool calls for progress reporting + /health tracking
         subprocess.on("message", (msg) => {
             if (msg.type !== "stream_event")
                 return;
@@ -383,6 +542,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
                 if (block?.type === "tool_use" && block.name) {
                     console.error(`[Stream] Tool call: ${block.name}`);
                     progress.report(block.name).catch(() => { });
+                    trackTool(requestId, block.name);
                 }
             }
         });
@@ -400,6 +560,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
             });
             subprocess.on("result", (_result) => {
                 isComplete = true;
+                unregisterRequest(requestId);
                 progress.cleanup().catch(() => { });
                 // Apply bleed strip then parse tool calls
                 const safeText = stripAssistantBleed(toolBuffer);
@@ -436,6 +597,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
             });
             subprocess.on("result", (_result) => {
                 isComplete = true;
+                unregisterRequest(requestId);
                 // Flush any buffered tail through bleed detection before finishing
                 flushTail();
                 // Clean up progress message before sending final response
@@ -452,6 +614,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
         }
         subprocess.on("error", (error) => {
             console.error("[Streaming] Error:", error.message);
+            unregisterRequest(requestId);
             // Clean up progress message
             progress.cleanup().catch(() => { });
             // Notify via Telegram if it's a timeout
@@ -467,6 +630,7 @@ async function handleStreamingResponse(req, res, subprocess, cliInput, requestId
             resolve();
         });
         subprocess.on("close", (code) => {
+            unregisterRequest(requestId);
             // Subprocess exited - ensure response is closed
             if (!res.writableEnded) {
                 if (code !== 0 && !isComplete) {
@@ -502,6 +666,7 @@ async function handleNonStreamingResponse(res, subprocess, cliInput, requestId, 
         });
         subprocess.on("error", (error) => {
             console.error("[NonStreaming] Error:", error.message);
+            unregisterRequest(requestId);
             if (error.message.includes("timed out")) {
                 notifyTelegram(`⚠️ 任務超時被終止：${error.message}`);
             }
@@ -511,6 +676,7 @@ async function handleNonStreamingResponse(res, subprocess, cliInput, requestId, 
             resolve();
         });
         subprocess.on("close", (code) => {
+            unregisterRequest(requestId);
             if (finalResult) {
                 // Strip any [User]/[Human] bleed from the final result text
                 finalResult = {
@@ -554,13 +720,46 @@ export function handleModels(_req, res) {
     });
 }
 /**
- * Handle GET /health — Health check endpoint
+ * Handle GET /health — Health check endpoint with CLI status
  */
 export function handleHealth(_req, res) {
+    const now = Date.now();
+    const requests = [];
+    for (const [id, info] of activeRequests) {
+        requests.push({
+            id,
+            model: info.model,
+            elapsed: formatElapsed(now - info.startedAt),
+            lastTool: info.lastTool,
+            toolHistory: info.toolHistory,
+            conversationId: info.conversationId,
+            isSubagent: info.isSubagent,
+        });
+    }
+    const busy = requests.length > 0;
+    // Subagent sessions info
+    const subagents = [];
+    for (const [convId, session] of subagentSessions) {
+        subagents.push({
+            conversationId: convId,
+            subConvId: session.subConvId,
+            active: session.active,
+            createdAt: new Date(session.createdAt).toISOString(),
+            lastUsedAt: new Date(session.lastUsedAt).toISOString(),
+            requestCount: session.requestCount,
+            age: formatElapsed(now - session.createdAt),
+        });
+    }
     res.json({
         status: "ok",
         provider: "claude-code-cli",
         timestamp: new Date().toISOString(),
+        cli: {
+            state: busy ? "busy" : "idle",
+            activeRequests: requests.length,
+            requests,
+        },
+        subagentSessions: subagents,
     });
 }
 //# sourceMappingURL=routes.js.map
